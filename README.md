@@ -2,10 +2,6 @@
 
 **Federated Class-Incremental Learning for Android Malware Family Detection on CIC-AndMal-2020**
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
-[![License](https://img.shields.io/badge/license-Academic-green.svg)]()
-
 ## Overview
 
 This repository implements a comprehensive research framework for **Federated Class-Incremental Learning (FCIL)** applied to Android malware family detection. The framework addresses two key challenges in real-world malware detection:
@@ -191,11 +187,3 @@ bash scripts/export_code.sh
 3. Rebuffi et al. "iCaRL: Incremental Classifier and Representation Learning" (CVPR 2017)
 4. McMahan et al. "Communication-Efficient Learning of Deep Networks" (AISTATS 2017)
 5. Wang et al. "FedNova: Normalized Averaging" (NeurIPS 2020)
-
-## License
-
-This project is for academic research purposes.
-
-## Contact
-
-For questions or issues, please open a GitHub issue or contact the research team.
