@@ -9,11 +9,10 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from config import TASK_LABEL_MAP, ALL_LABELS, LABEL2ID, ID2LABEL
+from config import TASK_LABEL_MAP, LABEL2ID, ID2LABEL
 from models.fcil_model import FCILNet
 from data.dataset import TabularMalwareDataset
 from utils.metrics import compute_classification_metrics, ContinualEvaluationMatrix
-from training.metrics import MetricsTracker
 
 
 class ContinualEvaluator:
@@ -59,7 +58,20 @@ class ContinualEvaluator:
         sub_y = self.test_y[mask]
 
         if len(sub_y) == 0:
-            return {"accuracy": 0.0, "macro_f1": 0.0}
+            empty_metrics = compute_classification_metrics(
+                y_true=np.asarray([], dtype=np.int64),
+                y_pred=np.asarray([], dtype=np.int64),
+                seen_classes=seen_classes,
+                label_names=ID2LABEL,
+            )
+            return {
+                **empty_metrics,
+                "per_task_evaluation": {},
+                "average_forgetting": 0.0,
+                "continual_avg_accuracy": 0.0,
+                "continual_avg_macro_f1": 0.0,
+                "continual_matrix": self.continual_matrix.get_summary_dict(),
+            }
 
         loader = DataLoader(
             TabularMalwareDataset(sub_X, sub_y),
@@ -143,9 +155,10 @@ class Evaluator:
         self,
         test_loader: DataLoader,
         task_id: Optional[int] = None
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         self.model.eval()
-        tracker = MetricsTracker(self.n_classes)
+        all_predictions = []
+        all_targets = []
 
         with torch.no_grad():
             for data, targets in test_loader:
@@ -153,6 +166,16 @@ class Evaluator:
                 outputs = self.model(data)
                 predictions = outputs.argmax(dim=1).cpu().numpy()
                 targets = targets.cpu().numpy()
-                tracker.update(predictions, targets, task_id or 0)
+                all_predictions.extend(predictions.tolist())
+                all_targets.extend(targets.tolist())
 
-        return tracker.compute()
+        current_task = task_id if task_id is not None else 4
+        seen_classes = []
+        for seen_task in range(current_task + 1):
+            seen_classes.extend(LABEL2ID[label] for label in TASK_LABEL_MAP[seen_task])
+        return compute_classification_metrics(
+            np.asarray(all_targets),
+            np.asarray(all_predictions),
+            seen_classes,
+            ID2LABEL,
+        )

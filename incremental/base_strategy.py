@@ -78,7 +78,7 @@ class IncrementalStrategy(ABC):
         self.current_task = task_id
 
         # Expand classifier for new classes
-        if hasattr(self.model, 'expand_classifier'):
+        if task_id > 0 and hasattr(self.model, 'expand_classifier'):
             self.model.expand_classifier(n_new_classes)
             self.model.to(self.device)
 

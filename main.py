@@ -47,7 +47,7 @@ def parse_args():
     )
 
     # Core experiment mode
-    parser.add_argument("--mode", type=str, choices=["federated", "centralized"], default="federated",
+    parser.add_argument("--mode", type=str, choices=["federated", "centralized"], default="centralized",
                         help="Execution mode: federated multi-client simulation or centralized continual baseline")
     parser.add_argument("--exp_name", type=str, default="FCIL_AndMal2020",
                         help="Identifier tag for the experimental run")
@@ -67,15 +67,27 @@ def parse_args():
                         help="Generate synthetic CIC-AndMal-2020 raw files if real dataset is not present")
 
     # Incremental Learning & Methods
-    parser.add_argument("--method", type=str, choices=["finetune", "joint", "ewc", "lwf", "replay", "spcil", "malfsil"],
-                        default="malfsil", help="Class-Incremental Learning method")
+    parser.add_argument("--method", type=str, choices=["finetune", "joint", "ewc", "lwf", "replay", "spcil", "malfscil", "malfsil"],
+                        default="malfscil", help="Class-Incremental Learning method")
     parser.add_argument("--ewc_lambda", type=float, default=5000.0, help="Fisher information loss weight for EWC")
-    parser.add_argument("--lwf_temp", type=float, default=2.0, help="Distillation temperature for LwF and MALFSIL")
+    parser.add_argument("--lwf_temp", type=float, default=2.0, help="Distillation temperature for LwF")
     parser.add_argument("--lwf_alpha", type=float, default=1.0, help="Distillation loss scale for LwF")
     parser.add_argument("--buffer_size", type=int, default=20, choices=[5, 20, 50],
-                        help="Exemplar replay buffer size m samples/class for Replay and MALFSIL")
-    parser.add_argument("--malfsil_proto_weight", type=float, default=0.5,
-                        help="Global prototype alignment loss weight for MALFSIL")
+                        help="Exemplar replay buffer size m samples/class for Replay")
+    parser.add_argument("--fscil_k_shot", type=int, default=5,
+                        help="Labeled examples available per new class")
+    parser.add_argument("--fscil_n_way", type=int, default=3,
+                        help="New malware classes introduced per incremental session")
+    parser.add_argument("--fscil_query_per_class", type=int, default=5,
+                        help="Mask-augmented query examples generated per new class")
+    parser.add_argument("--fscil_mask_probability", type=float, default=0.1,
+                        help="Feature masking probability for query augmentation")
+    parser.add_argument("--malfscil_vae_weight", type=float, default=1.0,
+                        help="Base-session VAE objective weight")
+    parser.add_argument("--malfscil_arc_weight", type=float, default=0.5,
+                        help="ArcFace share of the incremental objective")
+    parser.add_argument("--malfscil_arc_scale", type=float, default=30.0)
+    parser.add_argument("--malfscil_arc_margin", type=float, default=0.5)
 
     # Federated Learning
     parser.add_argument("--aggregator", type=str, choices=["fedavg", "fednova"], default="fedavg",
@@ -105,6 +117,12 @@ def parse_args():
 
 def build_configs_from_args(args) -> ExperimentConfig:
     """Build unified ExperimentConfig hierarchy from parsed CLI arguments."""
+    if args.mode == "federated" and args.method in {"malfscil", "malfsil"}:
+        raise ValueError(
+            "The cited MalFSCIL paper defines a centralized FSCIL protocol, "
+            "not federated optimization. Use --mode centralized; the legacy "
+            "MALFSIL experiment remains in experiments/run_fl.py."
+        )
     scenario_cfg = ScenarioConfig(
         feature_type=args.feature_type,
         n_clients=args.n_clients,
@@ -124,13 +142,21 @@ def build_configs_from_args(args) -> ExperimentConfig:
         classes_per_task=3
     )
 
+    method_name = "malfscil" if args.method == "malfsil" else args.method
     il_cfg = ILConfig(
-        method_name=args.method,
+        method_name=method_name,
         ewc_lambda=args.ewc_lambda,
         lwf_temperature=args.lwf_temp,
         lwf_alpha=args.lwf_alpha,
         replay_buffer_size_per_class=args.buffer_size,
-        malfsil_proto_weight=args.malfsil_proto_weight
+        fscil_n_way=args.fscil_n_way,
+        fscil_k_shot=args.fscil_k_shot,
+        fscil_query_per_class=args.fscil_query_per_class,
+        fscil_mask_probability=args.fscil_mask_probability,
+        malfscil_vae_weight=args.malfscil_vae_weight,
+        malfscil_arc_weight=args.malfscil_arc_weight,
+        malfscil_arc_scale=args.malfscil_arc_scale,
+        malfscil_arc_margin=args.malfscil_arc_margin,
     )
 
     fl_cfg = FLConfig(
@@ -143,8 +169,26 @@ def build_configs_from_args(args) -> ExperimentConfig:
         device=args.device
     )
 
+    if args.mode == "federated":
+        case_name = (
+            f"{args.exp_name}_FEDERATED_{args.feature_type.upper()}_"
+            f"{method_name.upper()}_{args.aggregator.upper()}_K{args.n_clients}_"
+            f"E{args.local_epochs}_S{args.fscil_k_shot}"
+        )
+    else:
+        method_case = method_name.upper()
+        if method_name == "malfscil":
+            method_case = (
+                f"{method_case}_N{args.fscil_n_way}_S{args.fscil_k_shot}_"
+                f"Q{args.fscil_query_per_class}"
+            )
+        case_name = (
+            f"{args.exp_name}_CENTRALIZED_{args.feature_type.upper()}_"
+            f"{method_case}"
+        )
+
     exp_cfg = ExperimentConfig(
-        exp_name=f"{args.exp_name}_{args.method.upper()}_{args.aggregator.upper()}",
+        exp_name=case_name,
         output_root=args.output_root,
         scenario=scenario_cfg,
         model=model_cfg,

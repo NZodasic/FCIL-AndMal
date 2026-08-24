@@ -10,9 +10,39 @@ from sklearn.metrics import (
     accuracy_score,
     precision_recall_fscore_support,
     confusion_matrix,
-    classification_report
 )
 import torch
+
+
+def compute_fscil_session_metrics(
+    task_results: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Compute the session-level metrics reported by the MalFSCIL paper."""
+    accuracies = [float(result["accuracy"]) for result in task_results]
+    if not accuracies:
+        return {
+            "session_accuracies": [],
+            "performance_degradation": 0.0,
+            "average_accuracy": 0.0,
+            "area_under_time": 0.0,
+        }
+
+    performance_degradation = accuracies[0] - accuracies[-1]
+    average_accuracy = float(np.mean(accuracies))
+    if len(accuracies) == 1:
+        area_under_time = accuracies[0]
+    else:
+        trapezoids = [
+            (left + right) / 2.0
+            for left, right in zip(accuracies[:-1], accuracies[1:])
+        ]
+        area_under_time = float(np.mean(trapezoids))
+    return {
+        "session_accuracies": accuracies,
+        "performance_degradation": performance_degradation,
+        "average_accuracy": average_accuracy,
+        "area_under_time": area_under_time,
+    }
 
 
 def compute_classification_metrics(
@@ -33,13 +63,46 @@ def compute_classification_metrics(
     Returns:
         Dictionary of comprehensive evaluation metrics.
     """
+    empty_metrics = {
+        "accuracy": 0.0,
+        "precision_macro": 0.0,
+        "precision_micro": 0.0,
+        "precision_weighted": 0.0,
+        "recall_macro": 0.0,
+        "recall_micro": 0.0,
+        "recall_weighted": 0.0,
+        "f1_macro": 0.0,
+        "f1_micro": 0.0,
+        "f1_weighted": 0.0,
+    }
     if len(y_true) == 0:
-        return {"accuracy": 0.0, "macro_f1": 0.0, "micro_f1": 0.0}
+        return {
+            **empty_metrics,
+            "macro_f1": 0.0,
+            "micro_f1": 0.0,
+            "weighted_f1": 0.0,
+            "macro_precision": 0.0,
+            "macro_recall": 0.0,
+            "confusion_matrix": [],
+            "confusion_matrix_labels": list(seen_classes),
+        }
 
     # Restrict evaluation to seen classes
     mask = np.isin(y_true, seen_classes)
     y_true_seen = y_true[mask]
     y_pred_seen = y_pred[mask]
+
+    if len(y_true_seen) == 0:
+        return {
+            **empty_metrics,
+            "macro_f1": 0.0,
+            "micro_f1": 0.0,
+            "weighted_f1": 0.0,
+            "macro_precision": 0.0,
+            "macro_recall": 0.0,
+            "confusion_matrix": [],
+            "confusion_matrix_labels": list(seen_classes),
+        }
 
     acc = float(accuracy_score(y_true_seen, y_pred_seen))
 
@@ -85,6 +148,16 @@ def compute_classification_metrics(
 
     return {
         "accuracy": acc,
+        "precision_macro": float(prec_macro),
+        "precision_micro": float(prec_micro),
+        "precision_weighted": float(prec_weighted),
+        "recall_macro": float(rec_macro),
+        "recall_micro": float(rec_micro),
+        "recall_weighted": float(rec_weighted),
+        "f1_macro": float(f1_macro),
+        "f1_micro": float(f1_micro),
+        "f1_weighted": float(f1_weighted),
+        # Compatibility aliases used by existing continual-learning reports.
         "macro_f1": float(f1_macro),
         "micro_f1": float(f1_micro),
         "weighted_f1": float(f1_weighted),
@@ -95,6 +168,10 @@ def compute_classification_metrics(
         "per_class_f1": per_class_f1,
         "per_class_accuracy": per_class_acc,
         "total_evaluated_samples": int(len(y_true_seen)),
+        "confusion_matrix": confusion_matrix(
+            y_true_seen, y_pred_seen, labels=seen_classes
+        ).tolist(),
+        "confusion_matrix_labels": list(seen_classes),
     }
 
 

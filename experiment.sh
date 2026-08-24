@@ -2,7 +2,7 @@
 # ==============================================================================
 # Master Automated Experiment Benchmark Runner for FCIL on CIC-AndMal-2020
 # Implements Centralized Baselines, Federated Aggregation (FedAvg, FedNova),
-# Feature Modalities (Dynamic, Static, Fused), and IL Algorithms (MALFSIL, SPCIL, Replay, EWC, LwF)
+# Feature Modalities (Dynamic, Static, Fused), and IL Algorithms (MalFSCIL, SPCIL, Replay, EWC, LwF)
 # ==============================================================================
 
 set -e
@@ -74,6 +74,19 @@ python3 main.py \
     --output_root "$OUTPUT_ROOT" \
     --seed $SEED
 
+echo -e "\n[Experiment Step 2] Running paper-aligned MalFSCIL (3-Way 5-Shot)..."
+python3 main.py \
+    --mode centralized \
+    --feature_type dynamic \
+    --method malfscil \
+    --fscil_k_shot 5 \
+    --fscil_query_per_class 5 \
+    --fscil_mask_probability 0.1 \
+    --rounds_per_task $ROUNDS \
+    --batch_size $BATCH_SIZE \
+    --output_root "$OUTPUT_ROOT" \
+    --seed $SEED
+
 python3 main.py \
     --mode centralized \
     --feature_type dynamic \
@@ -86,7 +99,7 @@ python3 main.py \
 # ------------------------------------------------------------------------------
 # STEP 3: FEDERATED CLASS-INCREMENTAL BENCHMARKS (K=20 Clients, FedAvg)
 # ------------------------------------------------------------------------------
-METHODS=("finetune" "ewc" "lwf" "replay" "spcil" "malfsil")
+METHODS=("finetune" "ewc" "lwf" "replay" "spcil")
 
 for METHOD in "${METHODS[@]}"; do
     echo -e "\n[Experiment Step 3] Running FL FCIL: Method=${METHOD^^} | Aggregator=FedAvg | K=20..."
@@ -106,59 +119,33 @@ for METHOD in "${METHODS[@]}"; do
 done
 
 # ------------------------------------------------------------------------------
-# STEP 4: AGGREGATOR COMPARISON (FedAvg vs FedNova on MALFSIL)
-# ------------------------------------------------------------------------------
-echo -e "\n[Experiment Step 4] Running FedNova on MALFSIL (K=20)..."
-python3 main.py \
-    --mode federated \
-    --feature_type dynamic \
-    --method malfsil \
-    --aggregator fednova \
-    --n_clients 20 \
-    --dirichlet_alpha 0.5 \
-    --rounds_per_task $ROUNDS \
-    --local_epochs $EPOCHS \
-    --batch_size $BATCH_SIZE \
-    --buffer_size 20 \
-    --output_root "$OUTPUT_ROOT" \
-    --seed $SEED
-
-# ------------------------------------------------------------------------------
-# STEP 5: MULTI-MODAL FEATURE ABLATION (Dynamic vs Static vs Fused)
+# STEP 4: MALFSCIL FEATURE ABLATION
 # ------------------------------------------------------------------------------
 for FEAT in "static" "fused"; do
-    echo -e "\n[Experiment Step 5] Running MALFSIL on Feature=${FEAT^^} (K=20)..."
+    echo -e "\n[Experiment Step 4] Running MalFSCIL on Feature=${FEAT^^}..."
     python3 main.py \
-        --mode federated \
+        --mode centralized \
         --feature_type "$FEAT" \
-        --method malfsil \
-        --aggregator fedavg \
-        --n_clients 20 \
-        --dirichlet_alpha 0.5 \
+        --method malfscil \
+        --fscil_k_shot 5 \
         --rounds_per_task $ROUNDS \
-        --local_epochs $EPOCHS \
         --batch_size $BATCH_SIZE \
-        --buffer_size 20 \
         --output_root "$OUTPUT_ROOT" \
         --seed $SEED
 done
 
 # ------------------------------------------------------------------------------
-# STEP 6: REPLAY BUFFER ABLATION (m in {5, 20, 50})
+# STEP 5: MALFSCIL SHOT ABLATION
 # ------------------------------------------------------------------------------
-for M in 5 50; do
-    echo -e "\n[Experiment Step 6] Running MALFSIL Buffer Ablation: m=${M} samples/class..."
+for SHOTS in 1 10; do
+    echo -e "\n[Experiment Step 5] Running MalFSCIL ${SHOTS}-shot ablation..."
     python3 main.py \
-        --mode federated \
+        --mode centralized \
         --feature_type dynamic \
-        --method malfsil \
-        --aggregator fedavg \
-        --n_clients 20 \
-        --dirichlet_alpha 0.5 \
+        --method malfscil \
+        --fscil_k_shot "$SHOTS" \
         --rounds_per_task $ROUNDS \
-        --local_epochs $EPOCHS \
         --batch_size $BATCH_SIZE \
-        --buffer_size "$M" \
         --output_root "$OUTPUT_ROOT" \
         --seed $SEED
 done

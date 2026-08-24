@@ -10,6 +10,7 @@ echo "=========================================="
 # Default configurations
 N_CLIENTS="20 50"
 FEATURE_TYPES="dynamic static fused"
+# This runner uses the legacy IncrementalStrategy stack; malfsil here is not MalFSCIL.
 STRATEGIES="finetune joint ewc lwf replay spcil malfsil"
 AGGREGATORS="fedavg fednova"
 N_ROUNDS=50

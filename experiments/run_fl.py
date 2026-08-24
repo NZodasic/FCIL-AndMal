@@ -8,9 +8,11 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.data import DataLoader
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -38,6 +40,8 @@ from federated.aggregators.base import FedAvg, FedNova
 from utils.checkpoint import CheckpointManager
 from utils.logging import ExperimentLogger
 from training.evaluator import Evaluator
+from data.dataset import TabularMalwareDataset, load_heldout_test_set
+from utils.results import export_experiment_results, resolve_test_location
 
 
 def parse_args():
@@ -63,8 +67,10 @@ def parse_args():
 
     # Paths
     parser.add_argument('--data_dir', type=str, default='./fl_data_partitions')
+    parser.add_argument('--prepared_dir', type=str, default='./prepared_data')
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints')
     parser.add_argument('--log_dir', type=str, default='./logs')
+    parser.add_argument('--output_root', type=str, default='./EXPERIMENT')
 
     # Device
     parser.add_argument('--device', type=str, default='cuda')
@@ -159,7 +165,11 @@ def run_experiment(args):
     logger.log_config(vars(args))
 
     # Setup checkpoint manager
-    checkpoint_mgr = CheckpointManager(args.checkpoint_dir, args.experiment_name)
+    checkpoint_mgr = CheckpointManager(
+        args.checkpoint_dir,
+        args.experiment_name,
+        keep_last_n=max(3, args.n_tasks),
+    )
 
     # Create global model
     initial_classes = len(get_labels_for_task(0))
@@ -175,6 +185,8 @@ def run_experiment(args):
     # Create server
     server = FLServer(global_model, aggregator, args.device)
 
+    test_X, test_y = load_heldout_test_set(args.prepared_dir, args.feature_type)
+
     # Create clients
     for cid in range(args.n_clients):
         client_model = create_model(args.feature_type, initial_classes)
@@ -186,6 +198,7 @@ def run_experiment(args):
 
     # Run tasks
     all_results = []
+    checkpoint_paths = []
 
     for task_id in range(args.n_tasks):
         # Get participating clients for this task
@@ -219,16 +232,52 @@ def run_experiment(args):
             n_epochs=args.n_epochs
         )
 
+        seen_mask = np.isin(test_y, range(get_num_classes_for_task(task_id)))
+        test_loader = DataLoader(
+            TabularMalwareDataset(test_X[seen_mask], test_y[seen_mask]),
+            batch_size=args.batch_size,
+            shuffle=False,
+        )
+        final_metrics = Evaluator(
+            server.global_model,
+            device=args.device,
+            n_classes=get_num_classes_for_task(task_id),
+        ).evaluate(test_loader, task_id=task_id)
+        task_metrics.update(final_metrics)
         all_results.append(task_metrics)
 
         logger.info(f"Task {task_id} completed")
 
         # Save checkpoint
-        checkpoint_mgr.save_model(
+        global_round = (task_id + 1) * args.n_rounds
+        checkpoint_path = checkpoint_mgr.save_model(
             server.global_model,
             task_id=task_id,
+            round_id=global_round,
             metadata={'metrics': task_metrics}
         )
+        checkpoint_paths.append(checkpoint_path)
+
+        workbook_path = export_experiment_results(
+            workbook_path=str(Path(args.output_root) / "evaluation_results.xlsx"),
+            experiment_name=args.experiment_name,
+            method=args.strategy,
+            setting="federated",
+            rounds_per_task=args.n_rounds,
+            client_num=args.n_clients,
+            patch_size=args.batch_size,
+            test_location=resolve_test_location(
+                args.prepared_dir, args.feature_type
+            ),
+            task_results=all_results,
+            checkpoint_paths=checkpoint_paths,
+            artifact_dir=str(
+                Path(args.output_root)
+                / args.experiment_name
+                / "confusion_matrices"
+            ),
+        )
+        logger.info(f"Task-final results written to: {workbook_path}")
 
     logger.info("Experiment completed successfully")
 

@@ -10,7 +10,6 @@ from sklearn.metrics import (
     accuracy_score,
     precision_recall_fscore_support,
     confusion_matrix,
-    f1_score
 )
 
 
@@ -62,11 +61,16 @@ class MetricsTracker:
         preds = np.array(self.predictions)
         targets = np.array(self.targets)
 
-        # Basic accuracy
         accuracy = accuracy_score(targets, preds)
 
-        # Macro F1 (important for imbalanced malware datasets)
-        macro_f1 = f1_score(targets, preds, average='macro', zero_division=0)
+        aggregate_metrics = {}
+        for average in ('macro', 'micro', 'weighted'):
+            precision_avg, recall_avg, f1_avg, _ = precision_recall_fscore_support(
+                targets, preds, average=average, zero_division=0
+            )
+            aggregate_metrics[f'precision_{average}'] = precision_avg * 100
+            aggregate_metrics[f'recall_{average}'] = recall_avg * 100
+            aggregate_metrics[f'f1_{average}'] = f1_avg * 100
 
         # Per-class metrics
         precision, recall, f1, support = precision_recall_fscore_support(
@@ -75,9 +79,11 @@ class MetricsTracker:
 
         metrics = {
             'accuracy': accuracy * 100,
-            'macro_f1': macro_f1 * 100,
+            **aggregate_metrics,
+            'macro_f1': aggregate_metrics['f1_macro'],
             'mean_precision': np.mean(precision) * 100,
             'mean_recall': np.mean(recall) * 100,
+            'confusion_matrix': confusion_matrix(targets, preds).tolist(),
         }
 
         # Per-class F1

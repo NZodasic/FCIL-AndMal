@@ -238,7 +238,7 @@ class FLServer:
             self.clients[cid].before_task(task_id, n_new_classes)
 
         # Expand global model if needed
-        if hasattr(self.global_model, 'expand_classifier'):
+        if task_id > 0 and hasattr(self.global_model, 'expand_classifier'):
             self.global_model.expand_classifier(n_new_classes)
             self.global_model.to(self.device)
 
@@ -264,11 +264,19 @@ class FLServer:
                     train_loader=train_loaders[cid]
                 )
 
+        # Evaluation happens once, after the task's final communication round.
+        final_evaluation = {}
+        if self.evaluator is not None:
+            final_evaluation = self.evaluator.evaluate_all_seen_tasks(
+                self.global_model, task_id
+            )
+
         task_metrics = {
             'task_id': task_id,
             'n_rounds': n_rounds,
             'n_clients': len(client_ids),
-            'round_metrics': round_metrics
+            'round_metrics': round_metrics,
+            **final_evaluation,
         }
 
         self.history.append(task_metrics)

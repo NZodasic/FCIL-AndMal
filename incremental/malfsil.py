@@ -1,6 +1,10 @@
-"""MALFSIL: Malware Federated Self-Paced Incremental Learning.
+"""Deprecated legacy MALFSIL experiment.
 
-Proposed method combining:
+This module predates the paper-aligned MalFSCIL implementation in
+``methods/malfscil.py``. It is retained only for compatibility with the legacy
+``experiments/run_fl.py`` stack and must not be described as MalFSCIL.
+
+The legacy experiment combines:
 1. Local replay with herding
 2. Knowledge distillation
 3. Server-side prototype aggregation
@@ -18,7 +22,7 @@ from incremental.base_strategy import IncrementalStrategy
 
 
 class MALFSIL(IncrementalStrategy):
-    """MALFSIL: Proposed method for FCIL malware detection.
+    """Deprecated replay/distillation/prototype FCIL experiment.
 
     Combines:
     - Local experience replay (herding selection)
@@ -37,7 +41,7 @@ class MALFSIL(IncrementalStrategy):
         prototype_weight: float = 0.1,
         **kwargs
     ):
-        """Initialize MALFSIL.
+        """Initialize the deprecated MALFSIL strategy.
 
         Args:
             model: Neural network model.

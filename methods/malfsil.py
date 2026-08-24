@@ -1,5 +1,8 @@
 """
-MALFSIL: Multi-Facet Federated Self-Paced Incremental Learning (Proposed Method).
+Deprecated MALFSIL replay/distillation experiment.
+
+The canonical paper-aligned implementation is ``methods.malfscil``. This
+module remains available for old imports and historical experiment recovery.
 Combines local herding replay, old-task logit distillation, and server-side global
 class prototype alignment to mitigate both local and global catastrophic forgetting under non-IID skew.
 """
@@ -18,7 +21,7 @@ from models.fcil_model import FCILNet
 
 class MALFSILMethod(BaseILMethod):
     """
-    MALFSIL Framework (Proposed Novel FCIL Architecture).
+    Historical MALFSIL framework retained for reproducibility.
     Three-Tier Defense Mechanism:
     1. Local Exemplar Herding: Compact memory replay buffer per class.
     2. Adaptive Logit Distillation: Knowledge distillation on previous class logits.

@@ -4,7 +4,7 @@ Defines lifecycle hooks for pre-task setup, loss computation, and post-task cons
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Iterable, Optional, Tuple
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -57,6 +57,10 @@ class BaseILMethod(ABC):
     ) -> None:
         """Hook executed after completing training on task_id (e.g. Fisher computation, herding)."""
         pass
+
+    def auxiliary_parameters(self) -> Iterable[nn.Parameter]:
+        """Return trainable method-owned parameters not stored on the model."""
+        return ()
 
     def state_dict(self) -> Dict[str, Any]:
         """Export internal state for checkpointing."""

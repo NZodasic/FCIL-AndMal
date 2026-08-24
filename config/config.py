@@ -5,7 +5,7 @@ Learning framework for Android malware detection.
 
 """
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 from pathlib import Path
 import json
@@ -104,6 +104,7 @@ class FLConfig:
     batch_size: int = 256
     learning_rate: float = 0.001
     lr: float = 0.001
+    weight_decay: float = 0.0001
     optimizer: str = 'adam'
     aggregator: str = 'fedavg'
     client_fraction: float = 1.0
@@ -123,7 +124,7 @@ class IncrementalConfig:
     """Configuration for incremental learning strategies.
 
     Attributes:
-        method_name: Incremental strategy name ('finetune', 'joint', 'ewc', 'lwf', 'replay', 'spcil', 'malfsil').
+        method_name: Incremental strategy name ('finetune', 'joint', 'ewc', 'lwf', 'replay', 'spcil', 'malfscil').
         strategy: Alias for method_name.
         ewc_lambda: EWC regularization strength.
         lwf_alpha: LwF distillation weight.
@@ -135,9 +136,10 @@ class IncrementalConfig:
         spcil_mu: SPCIL pacing parameter.
         spcil_lambda_init: Initial SPCIL lambda.
         spcil_lambda_step: SPCIL step increment.
-        malfsil_distill_weight: Weight for logit distillation in MALFSIL.
-        malfsil_proto_weight: Weight for prototype loss in MALFSIL.
-        malfsil_margin: Prototype separation margin.
+        fscil_k_shot: Labeled support samples per new class.
+        fscil_query_per_class: Mask-augmented query samples per new class.
+        malfscil_vae_weight: Weight for base-session VAE loss.
+        malfscil_arc_weight: ArcFace share of the incremental objective.
     """
     method_name: str = 'finetune'
     strategy: str = 'finetune'
@@ -151,10 +153,33 @@ class IncrementalConfig:
     spcil_mu: float = 0.5
     spcil_lambda_init: float = 0.5
     spcil_lambda_step: float = 0.1
+    fscil_n_way: int = 3
+    fscil_k_shot: int = 5
+    fscil_query_per_class: int = 5
+    fscil_mask_probability: float = 0.1
+    malfscil_vae_weight: float = 1.0
+    malfscil_kl_weight: float = 1.0
+    malfscil_arc_weight: float = 0.5
+    malfscil_arc_scale: float = 30.0
+    malfscil_arc_margin: float = 0.5
+    malfscil_graph_attention_dim: int = 64
+    # Deprecated MALFSIL fields retained for configuration compatibility.
     malfsil_distill_weight: float = 1.0
     malfsil_proto_weight: float = 0.1
     malfsil_margin: float = 1.0
     malfsil_prototype_weight: float = 0.1
+
+    def __post_init__(self):
+        if self.method_name.lower() == 'malfsil':
+            self.method_name = 'malfscil'
+        if self.strategy.lower() == 'malfsil':
+            self.strategy = 'malfscil'
+        if self.fscil_n_way <= 0 or self.fscil_k_shot <= 0:
+            raise ValueError('FSCIL n_way and k_shot must be positive')
+        if self.fscil_query_per_class < 0:
+            raise ValueError('fscil_query_per_class cannot be negative')
+        if not 0.0 <= self.fscil_mask_probability <= 1.0:
+            raise ValueError('fscil_mask_probability must be in [0, 1]')
 
 
 # Alias for compatibility
@@ -193,11 +218,7 @@ class ExperimentConfig:
     def save_json(self, path: str) -> None:
         import json
         with open(path, 'w') as f:
-            json.dump({
-                'exp_name': self.exp_name,
-                'seed': self.seed,
-                'output_root': self.output_root
-            }, f, indent=2)
+            json.dump(asdict(self), f, indent=2)
 
 
 # Task label mapping for CIC-AndMal-2020 (5 tasks, 15 labels)

@@ -6,6 +6,12 @@ from models.dynamic_cnn import DynamicCNN, DynamicTCN
 from models.fused_model import FusedModel
 from models.layers.tcn_layer import TemporalConvNet, TemporalBlock
 from models.layers.capsule_layer import CapsuleLayer, PrimaryCapsule
+from models.malfscil import (
+    PrototypeGraphAttention,
+    VariationalFeatureAdapter,
+    additive_angular_margin_logits,
+    cosine_logits,
+)
 
 __all__ = [
     'IncrementalModel',
@@ -19,4 +25,8 @@ __all__ = [
     'TemporalBlock',
     'CapsuleLayer',
     'PrimaryCapsule',
+    'PrototypeGraphAttention',
+    'VariationalFeatureAdapter',
+    'additive_angular_margin_logits',
+    'cosine_logits',
 ]

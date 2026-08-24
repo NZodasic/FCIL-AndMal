@@ -151,3 +151,39 @@ def plot_per_family_f1_bar(
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
     plt.close()
+
+
+def plot_confusion_matrix(
+    matrix: List[List[int]],
+    class_names: List[str],
+    output_path: str,
+    title: str = "Confusion Matrix"
+) -> None:
+    """Save a confusion matrix using the class order used during evaluation."""
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    matrix_array = np.asarray(matrix, dtype=np.int64)
+    if matrix_array.shape != (len(class_names), len(class_names)):
+        raise ValueError("Confusion matrix dimensions must match class_names")
+
+    figure_size = max(6, min(14, len(class_names)))
+    plt.figure(figsize=(figure_size, figure_size), dpi=200)
+    sns.heatmap(
+        matrix_array,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        cbar_kws={"label": "Samples"},
+        xticklabels=class_names,
+        yticklabels=class_names,
+    )
+    plt.title(title)
+    plt.xlabel("Predicted label")
+    plt.ylabel("True label")
+    plt.xticks(rotation=45, ha="right")
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200)
+    plt.close()

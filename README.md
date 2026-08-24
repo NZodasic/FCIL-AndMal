@@ -14,7 +14,7 @@ This repository implements a comprehensive research framework for **Federated Cl
 - **5-Task Incremental Learning**: 15 malware families (Benign + 14 families) split across 5 sequential tasks
 - **Federated Learning**: Multiple clients with non-IID (Dirichlet α=0.5) data distribution
 - **Multiple Feature Types**: Static (9503D), Dynamic (141/282D), and Fused
-- **Comprehensive Strategies**: Fine-tune, Joint, EWC, LwF, Replay, SPCIL, and MALFSIL (proposed)
+- **Comprehensive Strategies**: Fine-tune, Joint, EWC, LwF, Replay, SPCIL, and MalFSCIL
 - **Aggregation Methods**: FedAvg and FedNova
 - **Model Architectures**: CNN, TCN, and Fused models
 
@@ -97,7 +97,7 @@ fcil_android_malware/
 │   ├── lwf.py             # Learning without Forgetting
 │   ├── replay.py          # Experience Replay
 │   ├── spcil.py           # Self-Paced CIL
-│   └── malfsil.py         # Proposed method
+│   └── malfsil.py         # Deprecated legacy compatibility method
 ├── federated/              # Federated learning components
 │   ├── client.py          # FL Client
 │   ├── server.py          # FL Server
@@ -161,13 +161,54 @@ bash scripts/run_experiments.sh
 bash scripts/export_code.sh
 ```
 
+### MalFSCIL
+
+`MalFSCIL` implements the two-stage method from Chai et al., adapted from
+malware images to this project's tabular static/dynamic features:
+
+1. The base session jointly optimizes classification and a variational
+   reconstruction objective.
+2. Each later session is restricted to an `N`-way `K`-shot support set.
+3. The feature extractor is frozen after the base session.
+4. Support features initialize class prototypes, which are evolved through
+   graph attention and optimized on masking-derived query samples using
+   softmax and additive angular-margin losses.
+
+The initial implementation targets the centralized FSCIL trainer. The paper
+does not define federated optimization; the older `malfsil` federated strategy
+is retained only as a compatibility experiment and is not the paper method.
+
+```bash
+python3 main.py \
+    --mode centralized \
+    --method malfscil \
+    --feature_type dynamic \
+    --fscil_n_way 3 \
+    --fscil_k_shot 5 \
+    --fscil_query_per_class 5 \
+    --fscil_mask_probability 0.1
+```
+
+The deprecated CLI spelling `--method malfsil` resolves to `malfscil` in the
+current trainer so existing centralized commands remain usable.
+
 ## Evaluation Metrics
 
 - **Accuracy**: Overall classification accuracy
-- **Macro-F1**: Macro-averaged F1 score (important for imbalanced malware data)
+- **Precision**: Macro, micro, and weighted averages
+- **Recall**: Macro, micro, and weighted averages
+- **F1-score**: Macro, micro, and weighted averages
 - **Forgetting**: Drop in performance on old classes
 - **Backward Transfer (BWT)**: Influence of learning new tasks on old tasks
 - **Communication Cost**: MB transmitted per task
+
+Task-final classification results are written to `EXPERIMENT/evaluation_results.xlsx`.
+Each experiment case has its own sheet, and each task has one row with the held-out
+test location, confusion-matrix path, and checkpoint path. Federated rows use
+cumulative global rounds (50, 100, 150, 200, and 250 with the default setup);
+centralized rows use the final epoch. The requested `patch_size` column records the
+configured batch size because this project evaluates tabular features rather than
+image patches.
 
 ## Citation
 
@@ -187,3 +228,4 @@ bash scripts/export_code.sh
 3. Rebuffi et al. "iCaRL: Incremental Classifier and Representation Learning" (CVPR 2017)
 4. McMahan et al. "Communication-Efficient Learning of Deep Networks" (AISTATS 2017)
 5. Wang et al. "FedNova: Normalized Averaging" (NeurIPS 2020)
+6. Chai et al. "MalFSCIL: A Few-Shot Class-Incremental Learning Approach for Malware Detection" (IEEE TIFS 2024), DOI: 10.1109/TIFS.2024.3516565

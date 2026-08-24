@@ -99,6 +99,29 @@ class ExperimentLogger:
         """Log error message."""
         self.log(logging.ERROR, message, **kwargs)
 
+    def section(self, title: str) -> None:
+        """Log a top-level experiment section."""
+        self.info(f"{'=' * 12} {title} {'=' * 12}")
+
+    def subsection(self, title: str) -> None:
+        """Log a task-level experiment section."""
+        self.info(f"{'-' * 8} {title} {'-' * 8}")
+
+    def log_task_evaluation(
+        self, task_id: int, task_name: str, metrics: Dict[str, Any]
+    ) -> None:
+        """Write a structured task-final evaluation record."""
+        self.log_structured({
+            "event": "task_evaluation",
+            "task_id": task_id,
+            "task_name": task_name,
+            "metrics": metrics,
+        })
+
+    def log_final_results(self, results: Dict[str, Any]) -> None:
+        """Write the final structured experiment summary."""
+        self.log_structured({"event": "final_results", "results": results})
+
     def log_structured(self, data: Dict[str, Any]) -> None:
         """Log structured data as JSON line.
 
