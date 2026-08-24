@@ -9,7 +9,8 @@ import os
 import glob
 import argparse
 import json
-from typing import Dict, List, Tuple, Optional
+import warnings
+from typing import Any, Dict, List, Tuple, Optional
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -21,6 +22,7 @@ from config import (
     LABEL2ID,
     ScenarioConfig,
 )
+from data.schema import drop_raw_metadata, get_feature_columns
 
 
 class AndMal2020DataPreparer:
@@ -36,16 +38,54 @@ class AndMal2020DataPreparer:
         self.seed = seed
         self.summary: Dict[str, Any] = {}
 
+    def _find_csv_files(self, relative_directories: List[str]) -> List[str]:
+        """Find direct CSV children in the supported canonical and flat layouts."""
+        files = []
+        for relative_directory in relative_directories:
+            directory = os.path.join(self.raw_root, relative_directory)
+            files.extend(glob.glob(os.path.join(directory, "*.csv")))
+        return sorted(set(files))
+
+    def _record_schema(self, df: pd.DataFrame, out_dir: str, feature_type: str) -> None:
+        feature_columns = get_feature_columns(df)
+        schema = {
+            "feature_type": feature_type,
+            "feature_count": len(feature_columns),
+            "feature_columns": feature_columns,
+        }
+        with open(os.path.join(out_dir, "feature_schema.json"), "w") as schema_file:
+            json.dump(schema, schema_file, indent=2)
+
+    def _record_class_coverage(self, df: pd.DataFrame, feature_type: str) -> None:
+        available = sorted(df["label"].astype(str).unique().tolist())
+        missing = [label for label in ALL_LABELS if label not in available]
+        self.summary[feature_type] = {
+            "available_labels": available,
+            "missing_labels": missing,
+            "sample_count": len(df),
+        }
+        if missing:
+            message = (
+                f"{feature_type} data is missing configured classes: {missing}. "
+                "Training can be used as a development run, but it is not a complete "
+                f"{len(ALL_LABELS)}-class experiment."
+            )
+            warnings.warn(message, RuntimeWarning, stacklevel=2)
+            print(f"  [Warning] {message}")
+
     def prepare_static(self, test_ratio: float = 0.2, val_ratio: float = 0.1) -> str:
         """
         Process static CSVs (Benign Ben0..Ben4 and 14 Malicious family files).
         """
         print(f"\n[Stage 1] Preparing Static Dataset from {self.raw_root}...")
-        static_benign_pattern = os.path.join(self.raw_root, "Static", "CCCS-CIC-Benign-CSVs", "*.csv")
-        static_malware_pattern = os.path.join(self.raw_root, "Static", "CCCS-CIC-Malicious-CSVs", "*.csv")
-
-        benign_files = glob.glob(static_benign_pattern)
-        malware_files = glob.glob(static_malware_pattern)
+        benign_files = self._find_csv_files([
+            os.path.join("Static", "CCCS-CIC-Benign-CSVs"),
+            "CCCS-CIC-Benign-CSVs",
+        ])
+        malware_files = self._find_csv_files([
+            os.path.join("Static", "CCCS-CIC-Malicious-CSVs"),
+            "CCCS-CIC-Malicious-CSVs",
+        ])
         all_static_files = benign_files + malware_files
 
         if not all_static_files:
@@ -72,6 +112,7 @@ class AndMal2020DataPreparer:
             # Chunked reading for large files
             file_chunks = []
             for chunk in pd.read_csv(file_path, chunksize=self.chunksize, low_memory=False):
+                chunk = drop_raw_metadata(chunk)
                 chunk["label"] = matched_label
                 file_chunks.append(chunk)
             df_file = pd.concat(file_chunks, ignore_index=True)
@@ -84,6 +125,8 @@ class AndMal2020DataPreparer:
 
         out_static_dir = os.path.join(self.output_dir, "static")
         os.makedirs(out_static_dir, exist_ok=True)
+        self._record_class_coverage(full_df, "static")
+        self._record_schema(full_df, out_static_dir, "static")
         
         # Save complete combined dataset
         full_path = os.path.join(out_static_dir, "static_all.csv")
@@ -99,13 +142,22 @@ class AndMal2020DataPreparer:
         Process dynamic CSVs (before & after reboot runtime logs).
         """
         print(f"\n[Stage 1] Preparing Dynamic Dataset from {self.raw_root}...")
-        dynamic_pattern = os.path.join(
-            self.raw_root, "Dynamic", "AndMal2020-dynamic-BeforeAndAfterReboot", "*.csv"
-        )
-        dynamic_files = glob.glob(dynamic_pattern)
+        dynamic_directories = [
+            os.path.join("Dynamic", "AndMal2020-dynamic-BeforeAndAfterReboot"),
+            "AndMal2020-dynamic-BeforeAndAfterReboot",
+        ]
+        if os.path.basename(os.path.normpath(self.raw_root)).casefold() == (
+            "AndMal2020-dynamic-BeforeAndAfterReboot".casefold()
+        ):
+            dynamic_directories.append("")
+        dynamic_files = self._find_csv_files(dynamic_directories)
 
         if not dynamic_files:
-            raise FileNotFoundError(f"No dynamic CSV files found in {self.raw_root}/Dynamic/...")
+            raise FileNotFoundError(
+                f"No dynamic CSV files found under {self.raw_root}. Expected either "
+                "Dynamic/AndMal2020-dynamic-BeforeAndAfterReboot/ or "
+                "AndMal2020-dynamic-BeforeAndAfterReboot/."
+            )
 
         dfs = []
         for file_path in dynamic_files:
@@ -125,6 +177,7 @@ class AndMal2020DataPreparer:
             print(f"  -> Reading {file_name} (Class: {matched_label}, Phase: {phase})...")
             file_chunks = []
             for chunk in pd.read_csv(file_path, chunksize=self.chunksize, low_memory=False):
+                chunk = drop_raw_metadata(chunk)
                 chunk["label"] = matched_label
                 chunk["reboot_phase"] = phase
                 file_chunks.append(chunk)
@@ -137,6 +190,8 @@ class AndMal2020DataPreparer:
 
         out_dyn_dir = os.path.join(self.output_dir, "dynamic")
         os.makedirs(out_dyn_dir, exist_ok=True)
+        self._record_class_coverage(full_df, "dynamic")
+        self._record_schema(full_df, out_dyn_dir, "dynamic")
         
         full_path = os.path.join(out_dyn_dir, "dynamic_all.csv")
         full_df.to_csv(full_path, index=False)
@@ -171,6 +226,8 @@ class AndMal2020DataPreparer:
 
         out_fused_dir = os.path.join(self.output_dir, "fused")
         os.makedirs(out_fused_dir, exist_ok=True)
+        self._record_class_coverage(merged_df, "fused")
+        self._record_schema(merged_df, out_fused_dir, "fused")
 
         full_path = os.path.join(out_fused_dir, "fused_all.csv")
         merged_df.to_csv(full_path, index=False)
@@ -246,6 +303,8 @@ class AndMal2020DataPreparer:
         }
         with open(os.path.join(self.output_dir, "dataset_paths.json"), "w") as f:
             json.dump(paths, f, indent=4)
+        with open(os.path.join(self.output_dir, "class_coverage.json"), "w") as f:
+            json.dump(self.summary, f, indent=2)
         print("\n[Stage 1] Completed! dataset_paths.json generated.")
 
 
@@ -268,6 +327,9 @@ def main():
         seed=args.seed
     )
     preparer.run_all(data_type=args.type, test_ratio=args.test_ratio, val_ratio=args.val_ratio)
+    if args.summary:
+        print("\nClass coverage:")
+        print(json.dumps(preparer.summary, indent=2))
 
 
 if __name__ == "__main__":

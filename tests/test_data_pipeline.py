@@ -5,6 +5,7 @@ Unit and Integration Tests for Stage 1 Data Preparation and Stage 2 Partitioning
 import os
 import shutil
 import unittest
+import json
 import numpy as np
 import pandas as pd
 
@@ -13,6 +14,7 @@ from data.synthetic_generator import generate_synthetic_raw_andmal2020
 from data.prepare_dataset import AndMal2020DataPreparer
 from data.partition import FCILDataPartitioner
 from data.dataset import FLTaskDataset, get_participating_clients, recommend_batch_size
+from data.schema import get_feature_columns
 
 
 class TestDataPipeline(unittest.TestCase):
@@ -94,6 +96,40 @@ class TestDataPipeline(unittest.TestCase):
         loader = ds.as_dataloader(batch_size=16)
         bx, by = next(iter(loader))
         self.assertGreater(bx.size(0), 0)
+
+    def test_04_flat_dynamic_layout_drops_source_metadata(self):
+        flat_root = os.path.join(self.test_dir, "flat_raw")
+        dynamic_dir = os.path.join(
+            flat_root, "AndMal2020-dynamic-BeforeAndAfterReboot"
+        )
+        flat_prepared = os.path.join(self.test_dir, "flat_prepared")
+        os.makedirs(dynamic_dir, exist_ok=True)
+        source = pd.DataFrame({
+            "dyn_0": np.arange(20),
+            "dyn_1": np.arange(20) + 1,
+            "Hash": [f"hash-{index}" for index in range(20)],
+            "Category": ["Adware"] * 20,
+            "Family": ["family"] * 20,
+        })
+        source.to_csv(
+            os.path.join(dynamic_dir, "Adware_before_reboot_Cat.csv"),
+            index=False,
+        )
+
+        preparer = AndMal2020DataPreparer(flat_root, flat_prepared, seed=42)
+        with self.assertWarnsRegex(RuntimeWarning, "missing configured classes"):
+            preparer.prepare_dynamic(test_ratio=0.2, val_ratio=0.1)
+
+        prepared = pd.read_csv(
+            os.path.join(flat_prepared, "dynamic", "dynamic_all.csv")
+        )
+        self.assertEqual(get_feature_columns(prepared), ["dyn_0", "dyn_1"])
+        self.assertNotIn("Hash", prepared.columns)
+        with open(
+            os.path.join(flat_prepared, "dynamic", "feature_schema.json")
+        ) as schema_file:
+            schema = json.load(schema_file)
+        self.assertEqual(schema["feature_count"], 2)
 
 
 if __name__ == "__main__":

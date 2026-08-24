@@ -14,6 +14,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 from config import LABEL2ID, ID2LABEL, ALL_LABELS
+from data.schema import get_feature_columns
 
 
 class TabularMalwareDataset(Dataset):
@@ -48,7 +49,7 @@ class FLTaskDataset:
         self.task_id = task_id
         self.client_id = client_id
         self.label_col = label_col
-        self.ignore_cols = ignore_cols or ["Sample_ID", "reboot_phase", "label"]
+        self.ignore_cols = ignore_cols or []
 
         self.file_path = self._find_client_file()
         self.df = self._load_data()
@@ -77,7 +78,7 @@ class FLTaskDataset:
         if len(self.df) == 0:
             return np.empty((0, 0), dtype=np.float32), np.empty((0,), dtype=np.int64)
 
-        feature_cols = [c for c in self.df.columns if c not in self.ignore_cols]
+        feature_cols = get_feature_columns(self.df, self.ignore_cols)
         # Filter for numeric columns
         X = self.df[feature_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).values.astype(np.float32)
         y_raw = self.df[self.label_col].values
@@ -146,7 +147,7 @@ def load_heldout_test_set(
     """
     Load central held-out test split for global multi-task evaluation.
     """
-    ignore_cols = ignore_cols or ["Sample_ID", "reboot_phase", "label"]
+    ignore_cols = ignore_cols or []
     test_dir = os.path.join(prepared_data_dir, feature_type)
     parquet_path = os.path.join(test_dir, "test.parquet")
     csv_path = os.path.join(test_dir, "test.csv")
@@ -158,7 +159,7 @@ def load_heldout_test_set(
     else:
         raise FileNotFoundError(f"Held-out test set not found in {test_dir} (Checked test.parquet and test.csv)")
 
-    feature_cols = [c for c in df.columns if c not in ignore_cols]
+    feature_cols = get_feature_columns(df, ignore_cols)
     X = df[feature_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).values.astype(np.float32)
     y_raw = df["label"].values
     y = np.array([LABEL2ID.get(lbl, -1) for lbl in y_raw], dtype=np.int64)

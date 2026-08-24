@@ -35,6 +35,7 @@ from data.synthetic_generator import generate_synthetic_raw_andmal2020
 from data.prepare_dataset import AndMal2020DataPreparer
 from data.partition import FCILDataPartitioner
 from data.dataset import load_heldout_test_set, TabularMalwareDataset, get_participating_clients
+from data.schema import get_feature_columns
 from training.evaluator import ContinualEvaluator
 from training.trainer import CentralizedTrainer
 from federated.server import FLServer
@@ -65,6 +66,8 @@ def parse_args():
                         help="Directory for Stage 2 client partition parquet files")
     parser.add_argument("--generate_synthetic", action="store_true", default=False,
                         help="Generate synthetic CIC-AndMal-2020 raw files if real dataset is not present")
+    parser.add_argument("--prepare_only", action="store_true", default=False,
+                        help="Prepare, validate, and partition data without starting training")
 
     # Incremental Learning & Methods
     parser.add_argument("--method", type=str, choices=["finetune", "joint", "ewc", "lwf", "replay", "spcil", "malfscil", "malfsil"],
@@ -272,7 +275,32 @@ def main():
         prepared_data_dir=exp_cfg.scenario.prepared_data_dir,
         feature_type=exp_cfg.scenario.feature_type
     )
-    logger.info(f"Held-out test set loaded: {len(test_y):,} samples across 15 classes.")
+    available_class_ids = sorted(np.unique(test_y[test_y >= 0]).tolist())
+    available_labels = [ID2LABEL[class_id] for class_id in available_class_ids]
+    missing_labels = [
+        label for label in ALL_LABELS if LABEL2ID[label] not in available_class_ids
+    ]
+    exp_cfg.model.input_dim = int(test_X.shape[1])
+    if args.feature_type == "dynamic":
+        exp_cfg.model.dynamic_input_dim = exp_cfg.model.input_dim
+    elif args.feature_type == "static":
+        exp_cfg.model.static_input_dim = exp_cfg.model.input_dim
+    exp_cfg.save_json(config_json_path)
+    logger.info(
+        f"Held-out test set loaded: {len(test_y):,} samples, "
+        f"{exp_cfg.model.input_dim} features, {len(available_labels)} observed classes."
+    )
+    if missing_labels:
+        logger.warning(
+            f"Configured classes absent from the dataset: {missing_labels}. "
+            "Results are not a complete 15-class benchmark."
+        )
+    if args.prepare_only:
+        logger.info(
+            "Dataset preparation completed; training was skipped because "
+            "--prepare_only was specified."
+        )
+        return
 
     evaluator = ContinualEvaluator(
         test_X=test_X,
@@ -309,7 +337,7 @@ def main():
                 t_task_dfs.append(df_c)
 
             t_df = pd.concat(t_task_dfs, ignore_index=True)
-            f_cols = [c for c in t_df.columns if c not in ["Sample_ID", "reboot_phase", "label"]]
+            f_cols = get_feature_columns(t_df)
             X_t = t_df[f_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).values.astype(np.float32)
             y_t = np.array([LABEL2ID.get(lbl, -1) for lbl in t_df["label"].values], dtype=np.int64)
             full_train_X[t] = X_t

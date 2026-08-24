@@ -13,6 +13,8 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+from data.schema import get_feature_columns
+
 
 class FLTaskDataset(Dataset):
     """PyTorch Dataset for a specific task and client."""
@@ -65,8 +67,7 @@ class FLTaskDataset(Dataset):
 
     def _get_feature_columns(self) -> List[str]:
         """Get list of feature columns (exclude label and metadata)."""
-        exclude = [self.label_col, 'Sample_ID', 'reboot_phase']
-        return [col for col in self.df.columns if col not in exclude]
+        return get_feature_columns(self.df, [self.label_col])
 
     def __len__(self) -> int:
         """Get dataset length."""

@@ -266,6 +266,7 @@ STATIC_LABEL_MAP = {
 }
 
 DYNAMIC_LABEL_MAP = {
+    'benign': 'Benign',
     'adware': 'Adware',
     'backdoor': 'Backdoor',
     'trojan_banker': 'TrojanBanker',

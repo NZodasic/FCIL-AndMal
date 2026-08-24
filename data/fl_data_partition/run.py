@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import ScenarioConfig, TASK_LABEL_MAP
 from data.fl_data_partition.partitioner import FLDataPartitioner, save_partitions
+from data.schema import get_feature_columns
 
 
 def parse_args() -> argparse.Namespace:
@@ -99,10 +100,8 @@ def load_fused_data(static_path: str, dynamic_path: str) -> pd.DataFrame:
         raise ValueError("Sample_ID column not found in dynamic data")
 
     # Get feature columns (exclude label, Sample_ID, reboot_phase)
-    static_features = [c for c in static_df.columns
-                       if c not in ['label', 'Sample_ID']]
-    dynamic_features = [c for c in dynamic_df.columns
-                        if c not in ['label', 'Sample_ID', 'reboot_phase']]
+    static_features = get_feature_columns(static_df)
+    dynamic_features = get_feature_columns(dynamic_df)
 
     # Rename features to avoid collision
     static_df = static_df.rename(columns={

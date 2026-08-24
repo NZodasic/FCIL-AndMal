@@ -34,10 +34,10 @@ pip install -r requirements.txt
 ### Stage 1: Merge and Normalize
 
 ```bash
-python data/prepare_dataset.py \
-    --root /path/to/CIC-AndMal-2020 \
+python3 -m data.prepare_dataset \
+    --root /home/raymond/Desktop/AndMal-IDS/Dataset \
     --output_dir ./prepared_data \
-    --type both \
+    --type dynamic \
     --summary
 ```
 
@@ -45,21 +45,21 @@ python data/prepare_dataset.py \
 
 ```bash
 # Static features
-python -m data.fl_data_partition.run \
-    --dataset ./prepared_data/static/static_all.csv \
+python3 -m data.partition \
+    --dataset ./prepared_data/static/train.parquet \
     --feature_type static \
     --n_clients 20 50
 
 # Dynamic features
-python -m data.fl_data_partition.run \
-    --dataset ./prepared_data/dynamic/dynamic_all.csv \
+python3 -m data.partition \
+    --dataset ./prepared_data/dynamic/train.parquet \
     --feature_type dynamic \
     --n_clients 20 50
 
 # Fused features
-python -m data.fl_data_partition.run \
-    --static_dataset ./prepared_data/static/static_all.csv \
-    --dynamic_dataset ./prepared_data/dynamic/dynamic_all.csv \
+python3 -m data.partition \
+    --static_dataset ./prepared_data/static/train.parquet \
+    --dynamic_dataset ./prepared_data/dynamic/train.parquet \
     --feature_type fused \
     --n_clients 20 50
 ```
@@ -152,6 +152,32 @@ for task_id in range(5):
 ```
 
 ## Running Experiments
+
+The main entry point prepares and partitions missing data automatically. For a
+data-only validation against the local dynamic dataset:
+
+```bash
+python3 main.py \
+    --raw_root /home/raymond/Desktop/AndMal-IDS/Dataset \
+    --feature_type dynamic \
+    --prepare_only
+```
+
+Then run a short centralized training check:
+
+```bash
+python3 main.py \
+    --raw_root /home/raymond/Desktop/AndMal-IDS/Dataset \
+    --feature_type dynamic \
+    --mode centralized \
+    --method finetune \
+    --rounds_per_task 1 \
+    --device cpu
+```
+
+The supplied dynamic files contain 14 malware families but no Benign samples.
+The pipeline reports this explicitly; such a run is useful for development but
+is not the complete 15-class benchmark described in this README.
 
 ```bash
 # Run all experiments
