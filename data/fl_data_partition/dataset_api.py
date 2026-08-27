@@ -119,11 +119,13 @@ class FLTaskDataset(Dataset):
         Returns:
             PyTorch DataLoader.
         """
+        drop_last = len(self) > batch_size and (len(self) % batch_size == 1)
         return DataLoader(
             self,
             batch_size=batch_size,
             shuffle=shuffle,
             num_workers=num_workers,
+            drop_last=drop_last,
             pin_memory=True if torch.cuda.is_available() else False
         )
 

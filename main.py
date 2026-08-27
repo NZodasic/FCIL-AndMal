@@ -311,15 +311,27 @@ def main():
 
     # Run selected mode
     if args.mode == "federated":
-        server = FLServer(
-            config=exp_cfg,
-            evaluator=evaluator,
-            logger=logger
+        from experiments.run_fl import run_experiment
+        import types
+        fl_args = types.SimpleNamespace(
+            experiment_name=exp_cfg.experiment_name,
+            feature_type=args.feature_type,
+            n_clients=args.n_clients,
+            strategy=args.method,
+            aggregator="fedavg",
+            n_tasks=5,
+            n_rounds=args.rounds_per_task,
+            n_epochs=args.local_epochs,
+            batch_size=args.batch_size,
+            lr=exp_cfg.model.learning_rate if hasattr(exp_cfg, "model") else 0.001,
+            data_dir="./fl_data_partitions",
+            prepared_dir=exp_cfg.output.prepared_dir,
+            checkpoint_dir=exp_cfg.output.checkpoint_dir,
+            log_dir=exp_cfg.output.log_dir,
+            output_root=exp_cfg.output.output_root,
+            device=args.device,
         )
-        if args.resume_checkpoint:
-            server.checkpoint_mgr.load_checkpoint(args.resume_checkpoint, model=server.global_model)
-        
-        final_results = server.run_federated_pipeline()
+        final_results = run_experiment(fl_args)
 
     elif args.mode == "centralized":
         # Load centralized task data

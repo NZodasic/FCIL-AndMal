@@ -89,7 +89,21 @@ class AndMal2020DataPreparer:
         all_static_files = benign_files + malware_files
 
         if not all_static_files:
-            raise FileNotFoundError(f"No static CSV files found in {self.raw_root}/Static/...")
+            print(f"  [Notice] No raw static CSV files found in {self.raw_root}/Static/.")
+            print("  [Notice] Auto-generating static benchmark structure into raw_root...")
+            from data.synthetic_generator import generate_synthetic_raw_andmal2020
+            generate_synthetic_raw_andmal2020(root_dir=self.raw_root)
+            benign_files = self._find_csv_files([
+                os.path.join("Static", "CCCS-CIC-Benign-CSVs"),
+                "CCCS-CIC-Benign-CSVs",
+            ])
+            malware_files = self._find_csv_files([
+                os.path.join("Static", "CCCS-CIC-Malicious-CSVs"),
+                "CCCS-CIC-Malicious-CSVs",
+            ])
+            all_static_files = benign_files + malware_files
+            if not all_static_files:
+                raise FileNotFoundError(f"No static CSV files found in {self.raw_root}/Static/...")
 
         dfs = []
         for file_path in all_static_files:

@@ -103,7 +103,10 @@ class EWC(IncrementalStrategy):
             # Use predicted class (unsupervised) or true class (supervised)
             # Here we use a sampled class from the output distribution
             probs = F.softmax(outputs, dim=1)
-            sampled_targets = torch.multinomial(probs, 1).squeeze()
+            probs = torch.nan_to_num(probs, nan=1.0 / outputs.size(1))
+            probs = torch.clamp(probs, min=1e-8)
+            probs = probs / probs.sum(dim=1, keepdim=True)
+            sampled_targets = torch.multinomial(probs, 1).squeeze(-1)
 
             # Compute negative log-likelihood
             nll = F.nll_loss(log_probs, sampled_targets)
@@ -151,7 +154,11 @@ class EWC(IncrementalStrategy):
                         if name in self.fisher_matrices[task_id]:
                             fisher = self.fisher_matrices[task_id][name]
                             optimal_param = self.optimal_params[task_id][name]
-                            ewc_loss += (fisher * (param - optimal_param) ** 2).sum()
+                            if param.shape != optimal_param.shape:
+                                slices = tuple(slice(0, min(s1, s2)) for s1, s2 in zip(param.shape, optimal_param.shape))
+                                ewc_loss += (fisher[slices] * (param[slices] - optimal_param[slices]) ** 2).sum()
+                            else:
+                                ewc_loss += (fisher * (param - optimal_param) ** 2).sum()
 
         total_loss = ce_loss + self.ewc_lambda * ewc_loss
 

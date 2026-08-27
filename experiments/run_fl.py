@@ -78,24 +78,33 @@ def parse_args():
     return parser.parse_args()
 
 
-def create_model(feature_type: str, initial_classes: int = 3):
+def create_model(feature_type: str, initial_classes: int = 3, input_dim: int = None):
     """Create model based on feature type.
 
     Args:
         feature_type: 'static', 'dynamic', or 'fused'.
         initial_classes: Number of classes in first task.
+        input_dim: Input feature dimension.
 
     Returns:
         Model instance.
     """
     if feature_type == 'static':
-        return StaticCNN(input_dim=500, initial_classes=initial_classes)
+        dim = input_dim if input_dim is not None else 300
+        return StaticCNN(input_dim=dim, initial_classes=initial_classes)
     elif feature_type == 'dynamic':
-        return DynamicCNN(input_dim=141, initial_classes=initial_classes)
+        dim = input_dim if input_dim is not None else 141
+        return DynamicCNN(input_dim=dim, initial_classes=initial_classes)
     elif feature_type == 'fused':
+        static_dim = 300
+        dynamic_dim = 141
+        if input_dim is not None:
+            # Approx split or standard defaults
+            static_dim = 300
+            dynamic_dim = input_dim - static_dim if input_dim > 300 else 141
         return FusedModel(
-            static_input_dim=500,
-            dynamic_input_dim=141,
+            static_input_dim=static_dim,
+            dynamic_input_dim=dynamic_dim,
             initial_classes=initial_classes
         )
     else:
@@ -171,12 +180,15 @@ def run_experiment(args):
         keep_last_n=max(3, args.n_tasks),
     )
 
+    test_X, test_y = load_heldout_test_set(args.prepared_dir, args.feature_type)
+    input_dim = test_X.shape[1]
+
     # Create global model
     initial_classes = len(get_labels_for_task(0))
-    global_model = create_model(args.feature_type, initial_classes)
+    global_model = create_model(args.feature_type, initial_classes, input_dim=input_dim)
     global_model.to(args.device)
 
-    logger.info(f"Model created: {global_model.__class__.__name__}")
+    logger.info(f"Model created: {global_model.__class__.__name__} (input_dim={input_dim})")
     logger.info(f"Initial classes: {initial_classes}")
 
     # Create aggregator
@@ -185,11 +197,9 @@ def run_experiment(args):
     # Create server
     server = FLServer(global_model, aggregator, args.device)
 
-    test_X, test_y = load_heldout_test_set(args.prepared_dir, args.feature_type)
-
     # Create clients
     for cid in range(args.n_clients):
-        client_model = create_model(args.feature_type, initial_classes)
+        client_model = create_model(args.feature_type, initial_classes, input_dim=input_dim)
         strategy = create_strategy(args.strategy, client_model, args.lr, args.device)
         client = FLClient(cid, client_model, strategy, args.device)
         server.register_client(client)

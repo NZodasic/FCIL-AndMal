@@ -43,3 +43,5 @@ logs/
 # Document section
 document/
 paper/
+Dataset/
+checkpoints/
