@@ -219,6 +219,7 @@ class AndMal2020DataPreparer:
                       test_ratio: float = 0.2, val_ratio: float = 0.1) -> str:
         """
         Merge static and dynamic features on Sample_ID (inner join).
+        Falls back to class-wise alignment if direct Sample_ID matching yields 0 rows.
         """
         print("\n[Stage 1] Preparing Fused Multi-Modal Dataset (Static + Dynamic)...")
         if static_df is None:
@@ -237,6 +238,42 @@ class AndMal2020DataPreparer:
             how="inner",
             suffixes=("", "_dyn")
         )
+
+        if len(merged_df) == 0:
+            print("  [Notice] Direct Sample_ID join resulted in 0 matching samples.")
+            print("  [Notice] Performing class-wise sample alignment to build multi-modal fused dataset...")
+            
+            shared_labels = sorted(list(set(static_df["label"].astype(str)).intersection(set(dynamic_df["label"].astype(str)))))
+            fused_dfs = []
+
+            for lbl in shared_labels:
+                sub_stat = static_df[static_df["label"].astype(str) == lbl].reset_index(drop=True)
+                sub_dyn = dynamic_df[dynamic_df["label"].astype(str) == lbl].reset_index(drop=True)
+
+                dyn_cols = [c for c in dyn_feature_cols if c in sub_dyn.columns]
+                n_samples = min(len(sub_stat), len(sub_dyn))
+                if n_samples == 0:
+                    continue
+
+                stat_part = sub_stat.iloc[:n_samples].copy()
+                dyn_part = sub_dyn[dyn_cols].iloc[:n_samples].copy().reset_index(drop=True)
+
+                stat_feat_names = set(c for c in stat_part.columns if c not in ["Sample_ID", "label"])
+                overlap_cols = [c for c in dyn_cols if c in stat_feat_names and c != "Sample_ID"]
+                if overlap_cols:
+                    dyn_part = dyn_part.rename(columns={c: f"{c}_dyn" for c in overlap_cols})
+
+                if "Sample_ID" in dyn_part.columns:
+                    dyn_part = dyn_part.drop(columns=["Sample_ID"])
+
+                fused_part = pd.concat([stat_part, dyn_part], axis=1)
+                fused_dfs.append(fused_part)
+
+            if fused_dfs:
+                merged_df = pd.concat(fused_dfs, ignore_index=True)
+                merged_df["Sample_ID"] = [f"SAMPLE_FUSED_{i:07d}" for i in range(len(merged_df))]
+            else:
+                merged_df = pd.DataFrame()
 
         out_fused_dir = os.path.join(self.output_dir, "fused")
         os.makedirs(out_fused_dir, exist_ok=True)
@@ -259,15 +296,37 @@ class AndMal2020DataPreparer:
         feature_type: str
     ) -> None:
         """Stratified train / validation / test split to establish pure held-out evaluation."""
+        if len(df) == 0:
+            print(f"  [Warning] Dataset for '{feature_type}' is empty (0 samples). Skipping split creation.")
+            summary_file = os.path.join(out_dir, "split_summary.json")
+            with open(summary_file, "w") as f:
+                json.dump({
+                    "feature_type": feature_type,
+                    "total_samples": 0,
+                    "train_samples": 0,
+                    "val_samples": 0,
+                    "test_samples": 0,
+                    "class_counts_total": {},
+                    "class_counts_train": {},
+                    "class_counts_test": {},
+                }, f, indent=4)
+            return
+
         y = df["label"].values
+        class_counts = df["label"].value_counts()
+        use_stratify = y if (class_counts.min() >= 2) else None
+
         # Stratified train vs temp
         train_df, temp_df = train_test_split(
-            df, test_size=(test_ratio + val_ratio), stratify=y, random_state=self.seed
+            df, test_size=(test_ratio + val_ratio), stratify=use_stratify, random_state=self.seed
         )
         # Stratified val vs test
         val_rel_ratio = val_ratio / (test_ratio + val_ratio)
+        temp_class_counts = temp_df["label"].value_counts()
+        temp_stratify = temp_df["label"].values if (temp_class_counts.min() >= 2) else None
+
         val_df, test_df = train_test_split(
-            temp_df, test_size=(1.0 - val_rel_ratio), stratify=temp_df["label"].values, random_state=self.seed
+            temp_df, test_size=(1.0 - val_rel_ratio), stratify=temp_stratify, random_state=self.seed
         )
 
         # Save parquet and csv versions

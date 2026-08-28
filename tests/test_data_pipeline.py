@@ -131,6 +131,35 @@ class TestDataPipeline(unittest.TestCase):
             schema = json.load(schema_file)
         self.assertEqual(schema["feature_count"], 2)
 
+    def test_05_fused_fallback_class_wise_alignment(self):
+        """Verify prepare_fused falls back to class-wise alignment when Sample_IDs do not overlap."""
+        static_df = pd.DataFrame({
+            "Sample_ID": [f"SAMPLE_STAT_{i:04d}" for i in range(10)],
+            "label": ["Adware"] * 5 + ["Trojan"] * 5,
+            "stat_feat_1": np.random.randn(10),
+            "stat_feat_2": np.random.randn(10),
+        })
+        dynamic_df = pd.DataFrame({
+            "Sample_ID": [f"SAMPLE_DYN_{i:04d}" for i in range(8)],
+            "label": ["Adware"] * 4 + ["Trojan"] * 4,
+            "dyn_feat_1": np.random.randn(8),
+            "dyn_feat_2": np.random.randn(8),
+            "reboot_phase": ["before"] * 8
+        })
+
+        fused_prep_dir = os.path.join(self.test_dir, "fused_fallback_prep")
+        os.makedirs(fused_prep_dir, exist_ok=True)
+        preparer = AndMal2020DataPreparer(self.raw_dir, fused_prep_dir, seed=42)
+
+        fused_path = preparer.prepare_fused(static_df=static_df, dynamic_df=dynamic_df, test_ratio=0.2, val_ratio=0.1)
+        self.assertTrue(os.path.isfile(fused_path))
+
+        fused_df = pd.read_csv(fused_path)
+        self.assertEqual(len(fused_df), 8)
+        self.assertIn("stat_feat_1", fused_df.columns)
+        self.assertIn("dyn_feat_1", fused_df.columns)
+        self.assertIn("Sample_ID", fused_df.columns)
+
 
 if __name__ == "__main__":
     unittest.main()
