@@ -117,6 +117,14 @@ class CentralizedTrainer:
                     })
 
             ds = TabularMalwareDataset(curr_X, curr_y)
+            if len(ds) == 0:
+                raise ValueError(
+                    f"Task {task_id + 1} has 0 training samples! This occurs if partition files were generated "
+                    f"before applying the Stage 2 fused join fix. Please re-run Stage 2 partitioning:\n"
+                    f"  python3 -m data.partition --dataset {os.path.join(self.config.scenario.prepared_data_dir, self.config.scenario.feature_type, 'train.parquet')} "
+                    f"--feature_type {self.config.scenario.feature_type} --n_clients {self.config.scenario.n_clients} --output_dir {self.config.scenario.partition_output_dir}"
+                )
+
             train_loader = DataLoader(ds, batch_size=self.config.fl.batch_size, shuffle=True)
             optimization_loaders = [train_loader]
             if (
