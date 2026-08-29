@@ -1,257 +1,261 @@
-# FCIL-AndroidMalware
+# FCIL-AndMal: Federated Class-Incremental Learning for Android Malware Detection
 
-**Federated Class-Incremental Learning for Android Malware Family Detection on CIC-AndMal-2020**
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c.svg)](https://pytorch.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Framework: FCIL](https://img.shields.io/badge/Framework-FCIL%20%7C%20MalFSCIL-green.svg)](#)
 
-## Overview
+A comprehensive academic research platform for **Federated Class-Incremental Learning (FCIL)** and **Few-Shot Class-Incremental Learning (MalFSCIL)** applied to Android malware family detection on the **CIC-AndMal-2020** benchmark.
 
-This repository implements a comprehensive research framework for **Federated Class-Incremental Learning (FCIL)** applied to Android malware family detection. The framework addresses two key challenges in real-world malware detection:
+---
 
-1. **Temporal Evolution**: New malware families emerge continuously, requiring models to learn sequentially without catastrophic forgetting
-2. **Spatial Distribution**: Data cannot be centralized due to privacy, ownership, and bandwidth constraints
+## 📌 Overview
 
-## Key Features
+Modern Android malware detection faces two core operational challenges:
+1. **Temporal Evolution**: Malware variants evolve continuously, introducing novel family classes sequentially over time. Static models suffer from **catastrophic forgetting** when updated.
+2. **Spatial Privacy & Distribution**: Malware telemetry is fragmented across edge clients (devices, enterprise nodes, security vendors) and cannot be centralized due to strict data privacy regulations.
 
-- **5-Task Incremental Learning**: 15 malware families (Benign + 14 families) split across 5 sequential tasks
-- **Federated Learning**: Multiple clients with non-IID (Dirichlet α=0.5) data distribution
-- **Multiple Feature Types**: Static (9503D), Dynamic (141/282D), and Fused
-- **Comprehensive Strategies**: Fine-tune, Joint, EWC, LwF, Replay, SPCIL, and MalFSCIL
-- **Aggregation Methods**: FedAvg and FedNova
-- **Model Architectures**: CNN, TCN, and Fused models
+**FCIL-AndMal** unifies state-of-the-art Continual Learning (CIL), Few-Shot Learning (FSCIL), and Federated Aggregation (FedAvg, FedNova) under realistic Dirichlet non-IID label skew.
 
-## Installation
+---
 
-```bash
-# Clone repository
-git clone https://github.com/your-org/fcil-android-malware.git
-cd fcil-android-malware
+## ✨ Key Features
 
-# Install dependencies
-pip install -r requirements.txt
+- **5-Task Class-Incremental Benchmark**: 15 standardized malware and benign classes split across 5 sequential tasks.
+- **Multi-Modal Feature Fusion**: Supports **Static**, **Dynamic**, and **Fused** (multi-modal static + dynamic alignment) representations.
+- **Non-IID Federated Partitioning**: Dirichlet distribution ($\alpha = 0.5$) with progressive client participation ($12 \to 14 \to 16 \to 18 \to 20$ active clients).
+- **State-of-the-Art Baselines**:
+  - *Centralized CIL*: Fine-tuning, Joint Training, Elastic Weight Consolidation (**EWC**), Learning without Forgetting (**LwF**), Exemplar Replay, and **SPCIL**.
+  - *Few-Shot CIL*: **MalFSCIL** (Variational Reconstruction + Angular Margin ArcFace + Graph Attention Prototypes).
+  - *Federated Aggregation*: **FedAvg** and **FedNova**.
+- **Automated Logging & Excel Reporting**: Exports standard metrics (Macro-F1, Accuracy, Average Forgetting, Malware F1) into auto-formatted Excel reports (`evaluation_results.xlsx`) and PyTorch model checkpoints.
+
+---
+
+## 📂 Project Architecture
+
+```
+FCIL-AndMal/
+├── config/                 # Central configuration schemas & task mappings
+│   ├── config.py           # Dataclass configs (ScenarioConfig, ModelConfig, FLConfig, etc.)
+│   ├── task_config.py      # 5-Task label map (15 malware/benign classes)
+│   └── paths.py            # Path resolution utilities
+├── data/                   # Data pipeline & dataset loaders
+│   ├── prepare_dataset.py  # Stage 1: Merge, normalize & stratify held-out test splits
+│   ├── partition.py        # Stage 2: Dirichlet non-IID client partitioning
+│   ├── dataset.py          # PyTorch TabularMalwareDataset & FLTaskDataset loaders
+│   ├── schema.py           # Feature schema validation & metadata cleaning
+│   └── synthetic_generator.py # Synthetic data generator for development/testing
+├── models/                 # Neural architectures & backbones
+│   ├── fcil_model.py       # Primary FCIL model router & feature extractors
+│   ├── backbones.py        # MLP, 1D-CNN, TCN, and Fused backbones
+│   └── fused_model.py      # Multi-modal fusion networks
+├── methods/                # Continual & Few-Shot CIL algorithms
+│   ├── base.py             # Abstract base class for CIL methods
+│   ├── ewc.py              # Elastic Weight Consolidation
+│   ├── lwf.py              # Learning without Forgetting
+│   ├── replay.py           # Exemplar Replay
+│   ├── spcil.py            # Self-Paced Class-Incremental Learning
+│   └── malfscil.py         # MalFSCIL Few-Shot CIL strategy
+├── federated/              # Federated simulation environment
+│   ├── client.py           # Local FL client optimizer
+│   ├── server.py           # Global FL server orchestrator
+│   └── aggregators/        # FedAvg & FedNova aggregation logic
+├── training/               # Centralized & Federated trainers
+│   ├── trainer.py          # Centralized continual trainer
+│   ├── evaluator.py        # Continual matrix evaluator & metric tracking
+│   └── checkpoint.py       # PyTorch model checkpoint manager
+├── main.py                 # Primary entry point & CLI orchestrator
+├── requirements.txt        # Python dependencies
+├── README.md               # English documentation
+└── README_VN.md            # Vietnamese documentation
 ```
 
-## Dataset Preparation
+---
 
-### Stage 1: Merge and Normalize
+## 📅 5-Task Benchmark Schedule
+
+The 15 standardized classes are partitioned across 5 incremental tasks as follows:
+
+| Task | Introduced Classes | Active Clients ($K=20$) | Cumulative Classes |
+| :---: | :--- | :---: | :---: |
+| **Task 1** | `Benign`, `PUA`, `Backdoor` | 12 / 20 | 3 |
+| **Task 2** | `Adware`, `TrojanBanker`, `TrojanSpy` | 14 / 20 | 6 |
+| **Task 3** | `NoCategory`, `Trojan`, `Riskware` | 16 / 20 | 9 |
+| **Task 4** | `FileInfector`, `Ransomware`, `TrojanDropper` | 18 / 20 | 12 |
+| **Task 5** | `Scareware`, `ZeroDay`, `TrojanSMS` | 20 / 20 | 15 |
+
+---
+
+## ⚙️ Installation
+
+1. **Clone the Repository**:
+   ```bash
+   git clone https://github.com/your-org/FCIL-AndMal.git
+   cd FCIL-AndMal
+   ```
+
+2. **Create & Activate Virtual Environment**:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
+3. **Install Dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+---
+
+## 🚀 Data Pipeline Workflow
+
+### **Stage 1: Prepare Raw Datasets**
+Process raw CSV files, normalize feature columns, align static/dynamic features, and generate stratified held-out test splits:
 
 ```bash
 python3 -m data.prepare_dataset \
-    --root /home/raymond/Desktop/AndMal-IDS/Dataset \
-    --output_dir ./prepared_data \
-    --type dynamic \
-    --summary
+  --root /path/to/raw_dataset \
+  --output_dir /path/to/prepared_data \
+  --type all \
+  --summary
 ```
 
-### Stage 2: Create FL Partitions
+### **Stage 2: Generate Non-IID Dirichlet Partitions**
+Partition the prepared data into client slices across the 5 incremental tasks:
 
 ```bash
-# Static features
+# Partition Fused Modality (20 Clients)
 python3 -m data.partition \
-    --dataset ./prepared_data/static/train.parquet \
-    --feature_type static \
-    --n_clients 20 50
+  --dataset /path/to/prepared_data/fused/train.parquet \
+  --feature_type fused \
+  --n_clients 20 \
+  --dirichlet_alpha 0.5 \
+  --output_dir /path/to/fl_data_partitions
 
-# Dynamic features
+# Partition Dynamic Modality (20 Clients)
 python3 -m data.partition \
-    --dataset ./prepared_data/dynamic/train.parquet \
-    --feature_type dynamic \
-    --n_clients 20 50
+  --dataset /path/to/prepared_data/dynamic/train.parquet \
+  --feature_type dynamic \
+  --n_clients 20 \
+  --dirichlet_alpha 0.5 \
+  --output_dir /path/to/fl_data_partitions
 
-# Fused features
+# Partition Static Modality (20 Clients)
 python3 -m data.partition \
-    --static_dataset ./prepared_data/static/train.parquet \
-    --dynamic_dataset ./prepared_data/dynamic/train.parquet \
-    --feature_type fused \
-    --n_clients 20 50
+  --dataset /path/to/prepared_data/static/train.parquet \
+  --feature_type static \
+  --n_clients 20 \
+  --dirichlet_alpha 0.5 \
+  --output_dir /path/to/fl_data_partitions
 ```
 
-### Visualize Partitions
+---
 
-```bash
-python -m data.visualization.visualize_partitions \
-    --base_dir ./fl_data_partitions
-```
+## 💻 Running Experiments
 
-## Project Structure
+Execute experiments using `main.py`. Change `--device cuda` to `--device cpu` or `--device mps` as appropriate for your computing environment.
 
-```
-fcil_android_malware/
-├── config/                 # Configuration and task definitions
-│   ├── config.py          # Scenario, Model, FL, Experiment configs
-│   ├── task_config.py     # 5-task label mapping (15 labels)
-│   └── paths.py           # Path utilities
-├── data/                   # Data pipeline
-│   ├── prepare_dataset.py # Stage 1: Merge and normalize
-│   ├── fl_data_partition/ # Stage 2: FL partitioning
-│   └── visualization/     # Partition visualization
-├── models/                 # Model architectures
-│   ├── base_model.py      # Incremental model base class
-│   ├── static_cnn.py      # Static feature models
-│   ├── dynamic_cnn.py     # Dynamic feature models (CNN/TCN)
-│   ├── fused_model.py     # Static + Dynamic fusion
-│   └── layers/            # Custom layers (TCN, Capsule)
-├── incremental/            # Incremental learning strategies
-│   ├── base_strategy.py   # Base strategy class
-│   ├── fine_tune.py       # Baseline: sequential fine-tuning
-│   ├── joint.py           # Upper bound: joint training
-│   ├── ewc.py             # Elastic Weight Consolidation
-│   ├── lwf.py             # Learning without Forgetting
-│   ├── replay.py          # Experience Replay
-│   ├── spcil.py           # Self-Paced CIL
-│   └── malfsil.py         # Deprecated legacy compatibility method
-├── federated/              # Federated learning components
-│   ├── client.py          # FL Client
-│   ├── server.py          # FL Server
-│   └── aggregators/       # FedAvg, FedNova
-├── training/               # Training utilities
-│   ├── metrics.py         # Evaluation metrics
-│   └── evaluator.py       # Model evaluator
-├── utils/                  # Utilities
-│   ├── checkpoint.py      # Checkpoint management
-│   └── logging.py         # Structured logging
-├── experiments/            # Experiment runners
-├── scripts/                # Utility scripts
-├── requirements.txt
-└── README.md
-```
+### **1. Centralized Continual Learning Experiments**
 
-## Task Configuration
-
-| Task | Labels | Cumulative Classes |
-|------|--------|-------------------|
-| T1   | Benign, PUA, Backdoor | 3 |
-| T2   | Adware, TrojanBanker, TrojanSpy | 6 |
-| T3   | NoCategory, Trojan, Riskware | 9 |
-| T4   | FileInfector, Ransomware, TrojanDropper | 12 |
-| T5   | Scareware, ZeroDay, TrojanSMS | 15 |
-
-## Usage Example
-
-```python
-from config import ScenarioConfig, ModelConfig, FLConfig
-from data.fl_data_partition.dataset_api import FLTaskDataset, get_participating_clients
-from models.dynamic_cnn import DynamicCNN
-from incremental.ewc import EWC
-from federated.client import FLClient
-from federated.server import FLServer
-
-# Load data
-scenario_dir = "./fl_data_partitions/dynamic/20clients"
-for task_id in range(5):
-    active_clients = get_participating_clients(scenario_dir, task_id)
-
-    for cid in active_clients:
-        dataset = FLTaskDataset(scenario_dir, task_id, cid)
-        dataloader = dataset.as_dataloader(batch_size=256)
-
-        # Create model and strategy
-        model = DynamicCNN(input_dim=141, initial_classes=3)
-        strategy = EWC(model, optimizer_fn=lambda p: torch.optim.Adam(p, lr=0.001))
-
-        # Create client
-        client = FLClient(cid, model, strategy)
-```
-
-## Running Experiments
-
-The main entry point prepares and partitions missing data automatically. For a
-data-only validation against the local dynamic dataset:
-
+#### **MalFSCIL (Primary Proposed Method - Fused Features)**
 ```bash
 python3 main.py \
-    --raw_root /home/raymond/Desktop/AndMal-IDS/Dataset \
-    --feature_type dynamic \
-    --prepare_only
+  --mode centralized \
+  --feature_type fused \
+  --method malfscil \
+  --prepared_dir /path/to/prepared_data \
+  --partition_dir /path/to/fl_data_partitions \
+  --raw_root /path/to/raw_dataset \
+  --rounds_per_task 50 \
+  --device cpu
 ```
 
-Then run a short centralized training check:
+#### **Centralized Baselines (Finetune, EWC, LwF, Replay)**
+```bash
+# Fine-Tuning Baseline
+python3 main.py --mode centralized --feature_type fused --method finetune \
+  --prepared_dir /path/to/prepared_data --partition_dir /path/to/fl_data_partitions --device cpu
 
+# Elastic Weight Consolidation (EWC)
+python3 main.py --mode centralized --feature_type fused --method ewc --ewc_lambda 5000.0 \
+  --prepared_dir /path/to/prepared_data --partition_dir /path/to/fl_data_partitions --device cpu
+
+# Learning without Forgetting (LwF)
+python3 main.py --mode centralized --feature_type fused --method lwf --lwf_temp 2.0 --lwf_alpha 1.0 \
+  --prepared_dir /path/to/prepared_data --partition_dir /path/to/fl_data_partitions --device cpu
+
+# Exemplar Replay
+python3 main.py --mode centralized --feature_type fused --method replay --buffer_size 20 \
+  --prepared_dir /path/to/prepared_data --partition_dir /path/to/fl_data_partitions --device cpu
+```
+
+---
+
+### **2. Federated Class-Incremental Learning (FCIL)**
+
+#### **FedAvg + Exemplar Replay**
 ```bash
 python3 main.py \
-    --raw_root /home/raymond/Desktop/AndMal-IDS/Dataset \
-    --feature_type dynamic \
-    --mode centralized \
-    --method finetune \
-    --rounds_per_task 1 \
-    --device cpu
+  --mode federated \
+  --feature_type fused \
+  --method replay \
+  --aggregator fedavg \
+  --n_clients 20 \
+  --local_epochs 5 \
+  --rounds_per_task 50 \
+  --prepared_dir /path/to/prepared_data \
+  --partition_dir /path/to/fl_data_partitions \
+  --device cpu
 ```
 
-The supplied dynamic files contain 14 malware families but no Benign samples.
-The pipeline reports this explicitly; such a run is useful for development but
-is not the complete 15-class benchmark described in this README.
-
-```bash
-# Run all experiments
-bash scripts/run_experiments.sh
-
-# Export source code
-bash scripts/export_code.sh
-```
-
-### MalFSCIL
-
-`MalFSCIL` implements the two-stage method from Chai et al., adapted from
-malware images to this project's tabular static/dynamic features:
-
-1. The base session jointly optimizes classification and a variational
-   reconstruction objective.
-2. Each later session is restricted to an `N`-way `K`-shot support set.
-3. The feature extractor is frozen after the base session.
-4. Support features initialize class prototypes, which are evolved through
-   graph attention and optimized on masking-derived query samples using
-   softmax and additive angular-margin losses.
-
-The initial implementation targets the centralized FSCIL trainer. The paper
-does not define federated optimization; the older `malfsil` federated strategy
-is retained only as a compatibility experiment and is not the paper method.
-
+#### **FedNova + Exemplar Replay**
 ```bash
 python3 main.py \
-    --mode centralized \
-    --method malfscil \
-    --feature_type dynamic \
-    --fscil_n_way 3 \
-    --fscil_k_shot 5 \
-    --fscil_query_per_class 5 \
-    --fscil_mask_probability 0.1
+  --mode federated \
+  --feature_type fused \
+  --method replay \
+  --aggregator fednova \
+  --n_clients 20 \
+  --local_epochs 5 \
+  --rounds_per_task 50 \
+  --prepared_dir /path/to/prepared_data \
+  --partition_dir /path/to/fl_data_partitions \
+  --device cpu
 ```
 
-The deprecated CLI spelling `--method malfsil` resolves to `malfscil` in the
-current trainer so existing centralized commands remain usable.
+---
 
-## Evaluation Metrics
+## 📊 Evaluation & Artifact Output
 
-- **Accuracy**: Overall classification accuracy
-- **Precision**: Macro, micro, and weighted averages
-- **Recall**: Macro, micro, and weighted averages
-- **F1-score**: Macro, micro, and weighted averages
-- **Forgetting**: Drop in performance on old classes
-- **Backward Transfer (BWT)**: Influence of learning new tasks on old tasks
-- **Communication Cost**: MB transmitted per task
+All execution metrics, configs, logs, and checkpoints are stored automatically inside `./EXPERIMENT/`:
 
-Task-final classification results are written to `EXPERIMENT/evaluation_results.xlsx`.
-Each experiment case has its own sheet, and each task has one row with the held-out
-test location, confusion-matrix path, and checkpoint path. Federated rows use
-cumulative global rounds (50, 100, 150, 200, and 250 with the default setup);
-centralized rows use the final epoch. The requested `patch_size` column records the
-configured batch size because this project evaluates tabular features rather than
-image patches.
+```
+EXPERIMENT/
+├── evaluation_results.xlsx    # Central Excel report detailing Accuracy, Macro-F1, Malware F1, and Forgetting
+└── <EXPERIMENT_CASE_NAME>/
+    ├── experiment_config.json # Hyperparameter snapshot
+    ├── academic_experiment.log # Complete console execution log
+    └── checkpoints/           # Saved PyTorch model weights (.pt) per task session
+```
 
-## Citation
+---
+
+## 📝 Citation
+
+If you use this benchmark or codebase in your research, please cite:
 
 ```bibtex
 @article{fcil_andmal2026,
   title={Federated Class-Incremental Learning for Android Malware Family Detection},
   author={Research Team},
-  journal={arXiv preprint},
+  journal={Academic Research Platform},
   year={2026}
 }
 ```
 
-## References
+---
 
-1. Kirkpatrick et al. "Overcoming catastrophic forgetting in neural networks" (PNAS 2017)
-2. Li \& Hoiem. "Learning without Forgetting" (TPAMI 2017)
-3. Rebuffi et al. "iCaRL: Incremental Classifier and Representation Learning" (CVPR 2017)
-4. McMahan et al. "Communication-Efficient Learning of Deep Networks" (AISTATS 2017)
-5. Wang et al. "FedNova: Normalized Averaging" (NeurIPS 2020)
-6. Chai et al. "MalFSCIL: A Few-Shot Class-Incremental Learning Approach for Malware Detection" (IEEE TIFS 2024), DOI: 10.1109/TIFS.2024.3516565
+## 📄 License
+
+This project is released under the [MIT License](LICENSE).
