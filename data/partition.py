@@ -250,6 +250,7 @@ def main():
     parser.add_argument("--dataset", type=str, default="./prepared_data/dynamic/train.parquet")
     parser.add_argument("--static_dataset", type=str, default="./prepared_data/static/train.parquet")
     parser.add_argument("--dynamic_dataset", type=str, default="./prepared_data/dynamic/train.parquet")
+    parser.add_argument("--fused_dataset", type=str, default=None, help="Path to prepared fused dataset (e.g. train.parquet)")
     parser.add_argument("--feature_type", type=str, choices=["static", "dynamic", "fused"], default="dynamic")
     parser.add_argument("--n_clients", type=int, nargs="+", default=[20, 50])
     parser.add_argument("--dirichlet_alpha", type=float, default=0.5)
@@ -260,11 +261,49 @@ def main():
 
     # Load dataset
     if args.feature_type == "fused":
-        print(f"Loading static ({args.static_dataset}) and dynamic ({args.dynamic_dataset})...")
-        s_df = pd.read_parquet(args.static_dataset) if args.static_dataset.endswith(".parquet") else pd.read_csv(args.static_dataset)
-        d_df = pd.read_parquet(args.dynamic_dataset) if args.dynamic_dataset.endswith(".parquet") else pd.read_csv(args.dynamic_dataset)
-        dyn_cols = [c for c in d_df.columns if c not in ["label", "reboot_phase"]]
-        df = pd.merge(s_df, d_df[dyn_cols], on="Sample_ID", how="inner")
+        fused_path = args.fused_dataset or (args.dataset if "fused" in args.dataset.lower() else None)
+        if fused_path and os.path.exists(fused_path):
+            print(f"Loading fused dataset directly from ({fused_path})...")
+            df = pd.read_parquet(fused_path) if fused_path.endswith(".parquet") else pd.read_csv(fused_path)
+        else:
+            print(f"Loading static ({args.static_dataset}) and dynamic ({args.dynamic_dataset})...")
+            s_df = pd.read_parquet(args.static_dataset) if args.static_dataset.endswith(".parquet") else pd.read_csv(args.static_dataset)
+            d_df = pd.read_parquet(args.dynamic_dataset) if args.dynamic_dataset.endswith(".parquet") else pd.read_csv(args.dynamic_dataset)
+            dyn_cols = [c for c in d_df.columns if c not in ["label", "reboot_phase"]]
+            df = pd.merge(s_df, d_df[dyn_cols], on="Sample_ID", how="inner")
+
+            if len(df) == 0:
+                print("  [Notice] Direct Sample_ID join resulted in 0 matching samples.")
+                print("  [Notice] Performing class-wise sample alignment to build multi-modal fused dataset...")
+                shared_labels = sorted(list(set(s_df["label"].astype(str)).intersection(set(d_df["label"].astype(str)))))
+                fused_dfs = []
+
+                for lbl in shared_labels:
+                    sub_stat = s_df[s_df["label"].astype(str) == lbl].reset_index(drop=True)
+                    sub_dyn = d_df[d_df["label"].astype(str) == lbl].reset_index(drop=True)
+                    n_samples = min(len(sub_stat), len(sub_dyn))
+                    if n_samples == 0:
+                        continue
+
+                    stat_part = sub_stat.iloc[:n_samples].copy()
+                    dyn_part = sub_dyn[dyn_cols].iloc[:n_samples].copy().reset_index(drop=True)
+
+                    stat_feat_names = set(c for c in stat_part.columns if c not in ["Sample_ID", "label"])
+                    overlap_cols = [c for c in dyn_cols if c in stat_feat_names and c != "Sample_ID"]
+                    if overlap_cols:
+                        dyn_part = dyn_part.rename(columns={c: f"{c}_dyn" for c in overlap_cols})
+
+                    if "Sample_ID" in dyn_part.columns:
+                        dyn_part = dyn_part.drop(columns=["Sample_ID"])
+
+                    fused_part = pd.concat([stat_part, dyn_part], axis=1)
+                    fused_dfs.append(fused_part)
+
+                if fused_dfs:
+                    df = pd.concat(fused_dfs, ignore_index=True)
+                    df["Sample_ID"] = [f"SAMPLE_FUSED_{i:07d}" for i in range(len(df))]
+                else:
+                    df = pd.DataFrame()
     else:
         ds_path = args.dataset
         df = pd.read_parquet(ds_path) if ds_path.endswith(".parquet") else pd.read_csv(ds_path)

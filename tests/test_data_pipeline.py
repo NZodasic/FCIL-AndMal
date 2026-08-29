@@ -160,6 +160,45 @@ class TestDataPipeline(unittest.TestCase):
         self.assertIn("dyn_feat_1", fused_df.columns)
         self.assertIn("Sample_ID", fused_df.columns)
 
+    def test_06_partition_fused_with_unmatched_ids(self):
+        """Verify partition script loads fused dataset via direct file path or class-wise fallback."""
+        fused_prep_dir = os.path.join(self.test_dir, "fused_partition_test")
+        os.makedirs(os.path.join(fused_prep_dir, "static"), exist_ok=True)
+        os.makedirs(os.path.join(fused_prep_dir, "dynamic"), exist_ok=True)
+
+        s_df = pd.DataFrame({
+            "Sample_ID": [f"SAMPLE_STAT_{i:04d}" for i in range(100)],
+            "label": ["Benign"] * 50 + ["Adware"] * 50,
+            "stat_f1": np.random.randn(100)
+        })
+        d_df = pd.DataFrame({
+            "Sample_ID": [f"SAMPLE_DYN_{i:04d}" for i in range(100)],
+            "label": ["Benign"] * 50 + ["Adware"] * 50,
+            "dyn_f1": np.random.randn(100)
+        })
+        s_path = os.path.join(fused_prep_dir, "static", "train.parquet")
+        d_path = os.path.join(fused_prep_dir, "dynamic", "train.parquet")
+        s_df.to_parquet(s_path, index=False)
+        d_df.to_parquet(d_path, index=False)
+
+        # Run partition via main command line args mock logic
+        import sys
+        old_argv = sys.argv
+        sys.argv = [
+            "data.partition",
+            "--static_dataset", s_path,
+            "--dynamic_dataset", d_path,
+            "--feature_type", "fused",
+            "--n_clients", "20",
+            "--output_dir", os.path.join(fused_prep_dir, "partitions")
+        ]
+        from data.partition import main as partition_main
+        partition_main()
+        sys.argv = old_argv
+
+        part_dir = os.path.join(fused_prep_dir, "partitions", "fused", "20clients")
+        self.assertTrue(os.path.isfile(os.path.join(part_dir, "metadata.json")))
+
 
 if __name__ == "__main__":
     unittest.main()
