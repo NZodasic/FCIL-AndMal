@@ -12,7 +12,13 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
-from config import ExperimentConfig, TASK_LABEL_MAP, LABEL2ID
+from config import (
+    CENTRALIZED_BATCH_SIZE,
+    ExperimentConfig,
+    TASK_LABEL_MAP,
+    LABEL2ID,
+    ID2LABEL,
+)
 from models.fcil_model import FCILNet
 from methods import build_il_method
 from data.dataset import TabularMalwareDataset
@@ -42,6 +48,12 @@ class CentralizedTrainer:
         self.full_train_y = full_train_y
         self.evaluator = evaluator
         self.logger = logger
+        if config.fl.batch_size != CENTRALIZED_BATCH_SIZE:
+            self.logger.warning(
+                f"Centralized batch size is fixed at {CENTRALIZED_BATCH_SIZE}; "
+                f"overriding {config.fl.batch_size}."
+            )
+            config.fl.batch_size = CENTRALIZED_BATCH_SIZE
         self.device = torch.device(config.fl.device if torch.cuda.is_available() and config.fl.device != "cpu" else "cpu")
 
         # Initialize model
@@ -187,9 +199,36 @@ class CentralizedTrainer:
                         epoch_loss += loss.item()
                         epoch_batches += 1
 
-                if (ep + 1) % max(1, epochs_per_task // 2) == 0 or ep == epochs_per_task - 1:
+                is_final_epoch = ep == epochs_per_task - 1
+                if not is_final_epoch:
+                    self.checkpoint_mgr.save_weights_checkpoint(
+                        self.model,
+                        task_id=task_id,
+                        step_type="epoch",
+                        step_id=ep + 1,
+                        global_step=task_id * epochs_per_task + ep + 1,
+                    )
+                if (ep + 1) % 5 == 0 and not is_final_epoch:
                     avg_loss = epoch_loss / max(1, epoch_batches)
-                    self.logger.info(f"  [Task {task_id + 1} | Epoch {ep + 1}/{epochs_per_task}] Loss: {avg_loss:.4f}")
+                    interim_metrics = self.evaluator.evaluate_all_seen_tasks(self.model, task_id)
+                    context = (
+                        f"Centralized Task {task_id + 1} | "
+                        f"Epoch {ep + 1}/{epochs_per_task} | Test"
+                    )
+                    self.logger.info(f"{context} | Loss: {avg_loss:.4f}")
+                    self.logger.log_evaluation(
+                        interim_metrics,
+                        context=context,
+                        task_id=task_id,
+                        step=ep + 1,
+                    )
+                    self.model.train()
+                elif is_final_epoch:
+                    avg_loss = epoch_loss / max(1, epoch_batches)
+                    self.logger.info(
+                        f"Centralized Task {task_id + 1} | "
+                        f"Epoch {ep + 1}/{epochs_per_task} | Loss: {avg_loss:.4f}"
+                    )
 
             # 5. IL post-task hook
             self.il_method.after_task(
@@ -199,32 +238,38 @@ class CentralizedTrainer:
                 device=self.device
             )
 
+            checkpoint_path = self.checkpoint_mgr.save_weights_checkpoint(
+                self.model,
+                task_id=task_id,
+                step_type="epoch",
+                step_id=epochs_per_task,
+                global_step=(task_id + 1) * epochs_per_task,
+            )
+
             # 6. Comprehensive multi-task evaluation
             eval_metrics = self.evaluator.evaluate_all_seen_tasks(self.model, task_id)
             eval_metrics["task_id"] = task_id
             eval_metrics["task_name"] = f"Task_{task_id + 1}"
             all_task_results.append(eval_metrics)
 
+            self.logger.log_evaluation(
+                eval_metrics,
+                context=(
+                    f"Centralized Task {task_id + 1} | "
+                    f"Epoch {epochs_per_task}/{epochs_per_task} | Final Test"
+                ),
+                task_id=task_id,
+                step=epochs_per_task,
+                include_confusion_matrix=True,
+                label_names=ID2LABEL,
+            )
             self.logger.info(
-                f"  📊 Post-Task {task_id + 1} Evaluation -> Macro-F1: {eval_metrics['macro_f1'] * 100:.2f}% | "
-                f"Accuracy: {eval_metrics['accuracy'] * 100:.2f}% | "
-                f"Avg Forgetting: {eval_metrics['average_forgetting'] * 100:.2f}% | "
-                f"Malware F1: {eval_metrics['f1_malware_avg'] * 100:.2f}%"
+                f"Centralized Task {task_id + 1} | Continual Avg Accuracy: "
+                f"{eval_metrics['continual_avg_accuracy'] * 100:.2f}% | "
+                f"Avg Forgetting: {eval_metrics['average_forgetting'] * 100:.2f}%"
             )
 
-            # 7. Save task checkpoint & log
-            checkpoint_path = self.checkpoint_mgr.save_task_checkpoint(
-                task_id=task_id,
-                round_id=epochs_per_task,
-                global_model=self.model,
-                continual_matrix_dict=self.evaluator.continual_matrix.get_summary_dict(),
-                client_states={"method": self.il_method.state_dict()},
-                extra_meta={
-                    "fscil_session": fscil_manifests[-1]
-                    if self.config.il.method_name == "malfscil"
-                    else None
-                },
-            )
+            # 7. Track final-epoch and best-performing weight files.
             checkpoint_paths.append(checkpoint_path)
             self.checkpoint_mgr.save_best_model(
                 task_id=task_id,

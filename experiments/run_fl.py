@@ -18,8 +18,8 @@ from torch.utils.data import DataLoader
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import (
-    TASK_LABEL_MAP, get_labels_for_task, get_num_classes_for_task,
-    PathBuilder, ExperimentConfig
+    TASK_LABEL_MAP, ID2LABEL, get_labels_for_task, get_num_classes_for_task,
+    FEDERATED_BATCH_SIZE, PathBuilder, ExperimentConfig
 )
 from data.fl_data_partition.dataset_api import (
     FLTaskDataset, get_participating_clients, recommend_batch_size
@@ -37,7 +37,7 @@ from incremental.malfsil import MALFSIL
 from federated.client import FLClient
 from federated.server import FLServer
 from federated.aggregators.base import FedAvg, FedNova
-from utils.checkpoint import CheckpointManager
+from training.checkpoint import CheckpointManager
 from utils.logging import ExperimentLogger
 from training.evaluator import Evaluator
 from data.dataset import TabularMalwareDataset, load_heldout_test_set
@@ -62,7 +62,10 @@ def parse_args():
     parser.add_argument('--n_tasks', type=int, default=5)
     parser.add_argument('--n_rounds', type=int, default=50)
     parser.add_argument('--n_epochs', type=int, default=5)
-    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument(
+        '--batch_size', type=int, default=FEDERATED_BATCH_SIZE,
+        choices=[FEDERATED_BATCH_SIZE]
+    )
     parser.add_argument('--lr', type=float, default=0.001)
 
     # Paths
@@ -173,11 +176,15 @@ def run_experiment(args):
     logger.info(f"Starting experiment: {args.experiment_name}")
     logger.log_config(vars(args))
 
+    if args.batch_size != FEDERATED_BATCH_SIZE:
+        raise ValueError(
+            f"Federated batch size is fixed at {FEDERATED_BATCH_SIZE}"
+        )
+
     # Setup checkpoint manager
     checkpoint_mgr = CheckpointManager(
-        args.checkpoint_dir,
-        args.experiment_name,
-        keep_last_n=max(3, args.n_tasks),
+        checkpoint_dir=str(Path(args.checkpoint_dir) / args.experiment_name),
+        logger=logger,
     )
 
     test_X, test_y = load_heldout_test_set(args.prepared_dir, args.feature_type)
@@ -195,7 +202,12 @@ def run_experiment(args):
     aggregator = create_aggregator(args.aggregator)
 
     # Create server
-    server = FLServer(global_model, aggregator, args.device)
+    server = FLServer(
+        global_model,
+        aggregator,
+        args.device,
+        checkpoint_manager=checkpoint_mgr,
+    )
 
     # Create clients
     for cid in range(args.n_clients):
@@ -225,7 +237,7 @@ def run_experiment(args):
         for cid in active_clients:
             dataset = FLTaskDataset(str(scenario_dir), task_id, cid)
             train_loaders[cid] = dataset.as_dataloader(
-                batch_size=args.batch_size,
+                batch_size=FEDERATED_BATCH_SIZE,
                 shuffle=True
             )
 
@@ -245,7 +257,7 @@ def run_experiment(args):
         seen_mask = np.isin(test_y, range(get_num_classes_for_task(task_id)))
         test_loader = DataLoader(
             TabularMalwareDataset(test_X[seen_mask], test_y[seen_mask]),
-            batch_size=args.batch_size,
+            batch_size=FEDERATED_BATCH_SIZE,
             shuffle=False,
         )
         final_metrics = Evaluator(
@@ -256,16 +268,24 @@ def run_experiment(args):
         task_metrics.update(final_metrics)
         all_results.append(task_metrics)
 
+        global_round = (task_id + 1) * args.n_rounds
+        logger.log_evaluation(
+            final_metrics,
+            context=(
+                f"FL Task {task_id + 1} | Global Round {global_round} "
+                f"(task round {args.n_rounds}/{args.n_rounds}) | Final Test"
+            ),
+            task_id=task_id,
+            step=global_round,
+            round_id=global_round,
+            include_confusion_matrix=True,
+            label_names=ID2LABEL,
+        )
         logger.info(f"Task {task_id} completed")
 
-        # Save checkpoint
-        global_round = (task_id + 1) * args.n_rounds
-        checkpoint_path = checkpoint_mgr.save_model(
-            server.global_model,
-            task_id=task_id,
-            round_id=global_round,
-            metadata={'metrics': task_metrics}
-        )
+        checkpoint_path = task_metrics["final_checkpoint_path"]
+        if checkpoint_path is None:
+            raise RuntimeError(f"Task {task_id + 1} produced no round checkpoint")
         checkpoint_paths.append(checkpoint_path)
 
         workbook_path = export_experiment_results(
@@ -275,7 +295,7 @@ def run_experiment(args):
             setting="federated",
             rounds_per_task=args.n_rounds,
             client_num=args.n_clients,
-            patch_size=args.batch_size,
+            patch_size=FEDERATED_BATCH_SIZE,
             test_location=resolve_test_location(
                 args.prepared_dir, args.feature_type
             ),

@@ -13,6 +13,12 @@ from typing import Any, Dict, Optional
 
 import csv
 
+from utils.metrics import (
+    format_classification_metrics,
+    format_confusion_matrix,
+    primary_classification_metrics,
+)
+
 
 class ExperimentLogger:
     """Structured logger for experiments.
@@ -117,6 +123,43 @@ class ExperimentLogger:
             "task_name": task_name,
             "metrics": metrics,
         })
+
+    def log_evaluation(
+        self,
+        metrics: Dict[str, Any],
+        *,
+        context: str,
+        task_id: Optional[int] = None,
+        step: Optional[int] = None,
+        round_id: Optional[int] = None,
+        include_confusion_matrix: bool = False,
+        label_names: Optional[Dict[int, str]] = None,
+    ) -> None:
+        """Log one test with all required metrics and an optional final matrix."""
+        primary_metrics = primary_classification_metrics(metrics)
+        record = {
+            "event": "test_evaluation",
+            "context": context,
+            "metrics": primary_metrics,
+            "step": step,
+            "task_id": task_id,
+            "round_id": round_id,
+            "is_task_final": include_confusion_matrix,
+        }
+        if include_confusion_matrix:
+            record["confusion_matrix"] = metrics.get("confusion_matrix", [])
+            record["confusion_matrix_labels"] = metrics.get(
+                "confusion_matrix_labels", []
+            )
+
+        self.log_structured(record)
+        self._write_metrics_csv(primary_metrics, step, task_id, round_id)
+        self.info(f"{context} | {format_classification_metrics(primary_metrics)}")
+        if include_confusion_matrix:
+            self.info(
+                f"{context} | "
+                f"{format_confusion_matrix(metrics, label_names=label_names)}"
+            )
 
     def log_final_results(self, results: Dict[str, Any]) -> None:
         """Write the final structured experiment summary."""

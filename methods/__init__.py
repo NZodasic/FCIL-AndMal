@@ -28,7 +28,7 @@ def build_il_method(config: ILConfig) -> BaseILMethod:
         return ReplayHerdingMethod(buffer_size_per_class=config.replay_buffer_size_per_class, use_herding=config.herding)
     elif m_name == "spcil":
         return SPCILMethod(lambda_init=config.spcil_lambda_init, lambda_step=config.spcil_lambda_step)
-    elif m_name in {"malfscil", "malfsil"}:
+    elif m_name == "malfscil":
         return MalFSCILMethod(
             vae_weight=config.malfscil_vae_weight,
             kl_weight=config.malfscil_kl_weight,
@@ -36,6 +36,13 @@ def build_il_method(config: ILConfig) -> BaseILMethod:
             arc_scale=config.malfscil_arc_scale,
             arc_margin=config.malfscil_arc_margin,
             graph_attention_dim=config.malfscil_graph_attention_dim,
+        )
+    elif m_name == "malfsil":
+        return MALFSILMethod(
+            buffer_size_per_class=config.replay_buffer_size_per_class,
+            distill_weight=getattr(config, "malfsil_distill_weight", 1.0),
+            proto_weight=getattr(config, "malfsil_proto_weight", 0.5),
+            temperature=getattr(config, "lwf_temperature", 2.0),
         )
     else:
         raise ValueError(f"Unknown IL method name: {config.method_name}")

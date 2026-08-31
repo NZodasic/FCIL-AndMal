@@ -39,6 +39,9 @@ from .task_config import (
     FUSED_FEATURE_DIM,
     MIN_SAMPLES_PER_LABEL_CLIENT,
     DEFAULT_BATCH_SIZE,
+    FEDERATED_BATCH_SIZE,
+    CENTRALIZED_BATCH_SIZE,
+    get_batch_size_for_mode,
 )
 
 from .paths import (
@@ -75,6 +78,8 @@ __all__ = [
     'FUSED_FEATURE_DIM',
     'MIN_SAMPLES_PER_LABEL_CLIENT',
     'DEFAULT_BATCH_SIZE',
+    'FEDERATED_BATCH_SIZE',
+    'CENTRALIZED_BATCH_SIZE',
     # Functions
     'get_task_label_map',
     'get_cumulative_labels',
@@ -87,6 +92,7 @@ __all__ = [
     'get_task_for_label',
     'is_label_in_task',
     'get_client_counts',
+    'get_batch_size_for_mode',
     'save_config',
     'load_config',
     # Paths

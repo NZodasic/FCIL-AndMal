@@ -28,6 +28,7 @@ from config import (
     ALL_LABELS,
     LABEL2ID,
     ID2LABEL,
+    get_batch_size_for_mode,
 )
 from utils.seed import set_seed
 from utils.logger import AcademicLogger, get_logger
@@ -103,8 +104,12 @@ def parse_args():
                         help="Communication rounds per incremental task")
     parser.add_argument("--local_epochs", type=int, default=5, choices=[1, 5],
                         help="Local training epochs per client per round (E in {1, 5})")
-    parser.add_argument("--batch_size", type=int, default=256,
-                        help="Client batch size (recommended >= 256)")
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=None,
+        help="Fixed by mode: federated=256, centralized=1024",
+    )
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--device", type=str, default="cpu", help="Computation device ('cpu', 'cuda')")
 
@@ -120,11 +125,12 @@ def parse_args():
 
 def build_configs_from_args(args) -> ExperimentConfig:
     """Build unified ExperimentConfig hierarchy from parsed CLI arguments."""
-    if args.mode == "federated" and args.method in {"malfscil", "malfsil"}:
+    if args.mode == "federated" and args.method == "malfscil":
         raise ValueError(
             "The cited MalFSCIL paper defines a centralized FSCIL protocol, "
-            "not federated optimization. Use --mode centralized; the legacy "
-            "MALFSIL experiment remains in experiments/run_fl.py."
+            "not federated optimization. Use --mode centralized for malfscil. "
+            "For federated MALFSIL (three-tier: replay+distillation+prototype), "
+            "use --method malfsil which is FL-compatible."
         )
     scenario_cfg = ScenarioConfig(
         feature_type=args.feature_type,
@@ -145,7 +151,8 @@ def build_configs_from_args(args) -> ExperimentConfig:
         classes_per_task=3
     )
 
-    method_name = "malfscil" if args.method == "malfsil" else args.method
+    method_name = args.method  # malfsil and malfscil are now distinct methods
+
     il_cfg = ILConfig(
         method_name=method_name,
         ewc_lambda=args.ewc_lambda,
@@ -162,12 +169,19 @@ def build_configs_from_args(args) -> ExperimentConfig:
         malfscil_arc_margin=args.malfscil_arc_margin,
     )
 
+    batch_size = get_batch_size_for_mode(args.mode)
+    if args.batch_size is not None and args.batch_size != batch_size:
+        raise ValueError(
+            f"Batch size for {args.mode} is fixed at {batch_size}; "
+            f"received {args.batch_size}."
+        )
+
     fl_cfg = FLConfig(
         aggregator=args.aggregator,
         n_tasks=5,
         rounds_per_task=args.rounds_per_task,
         local_epochs=args.local_epochs,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         lr=args.lr,
         device=args.device
     )
@@ -305,33 +319,135 @@ def main():
     evaluator = ContinualEvaluator(
         test_X=test_X,
         test_y=test_y,
-        batch_size=args.batch_size,
+        batch_size=exp_cfg.fl.batch_size,
         device=torch.device(args.device if torch.cuda.is_available() and args.device != "cpu" else "cpu")
     )
 
     # Run selected mode
     if args.mode == "federated":
-        from experiments.run_fl import run_experiment
-        import types
-        fl_args = types.SimpleNamespace(
-            experiment_name=exp_cfg.experiment_name,
-            feature_type=args.feature_type,
-            n_clients=args.n_clients,
-            strategy=args.method,
-            aggregator="fedavg",
-            n_tasks=5,
-            n_rounds=args.rounds_per_task,
-            n_epochs=args.local_epochs,
-            batch_size=args.batch_size,
-            lr=exp_cfg.model.learning_rate if hasattr(exp_cfg, "model") else 0.001,
-            data_dir="./fl_data_partitions",
-            prepared_dir=exp_cfg.output.prepared_dir,
-            checkpoint_dir=exp_cfg.output.checkpoint_dir,
-            log_dir=exp_cfg.output.log_dir,
-            output_root=exp_cfg.output.output_root,
-            device=args.device,
+        import pandas as pd
+        from models.fcil_model import FCILNet
+        from methods import build_il_method
+        from federated.server import FLServer
+        from federated.client import FLClient
+        from federated.aggregators import build_aggregator
+        from training.checkpoint import CheckpointManager
+
+        agg = build_aggregator(args.aggregator)
+        ckpt_mgr = CheckpointManager(
+            checkpoint_dir=os.path.join(exp_cfg.get_exp_dir(), "checkpoints"),
+            logger=logger,
         )
-        final_results = run_experiment(fl_args)
+        global_model = FCILNet(exp_cfg.model).to(
+            torch.device(args.device if torch.cuda.is_available() and args.device != "cpu" else "cpu")
+        )
+        server = FLServer(
+            global_model=global_model,
+            aggregator=agg,
+            device=args.device,
+            config=exp_cfg,
+            evaluator=evaluator,
+            logger=logger,
+            checkpoint_manager=ckpt_mgr,
+        )
+
+        from federated.il_strategy_adapter import ILMethodStrategyAdapter
+        scenario_dir = exp_cfg.scenario.get_scenario_dir()
+        active_cids = get_participating_clients(scenario_dir, 0)
+        for cid in active_cids:
+            client_model = FCILNet(exp_cfg.model)
+            client_il = build_il_method(exp_cfg.il)
+            adapter = ILMethodStrategyAdapter(
+                model=client_model,
+                il_method=client_il,
+                lr=exp_cfg.fl.lr,
+                device=args.device,
+                classes_per_task=exp_cfg.model.classes_per_task,
+            )
+            client = FLClient(
+                client_id=cid,
+                model=client_model,
+                strategy=adapter,
+                device=args.device,
+            )
+            server.register_client(client)
+        logger.info(f"Registered {len(active_cids)} clients | IL: {args.method.upper()} | Agg: {args.aggregator.upper()}")
+
+        all_task_results = []
+        checkpoint_paths = []
+        from utils.results import export_experiment_results, resolve_test_location
+
+        for task_id in range(5):
+            task_cids = get_participating_clients(scenario_dir, task_id)
+            train_loaders = {}
+            for cid in task_cids:
+                if cid not in server.clients:
+                    client_model = FCILNet(exp_cfg.model)
+                    client_il = build_il_method(exp_cfg.il)
+                    adapter = ILMethodStrategyAdapter(
+                        model=client_model,
+                        il_method=client_il,
+                        lr=exp_cfg.fl.lr,
+                        device=args.device,
+                        classes_per_task=exp_cfg.model.classes_per_task,
+                    )
+                    client = FLClient(
+                        client_id=cid,
+                        model=client_model,
+                        strategy=adapter,
+                        device=args.device,
+                    )
+                    server.register_client(client)
+                p_file = os.path.join(scenario_dir, f"task_{task_id}", f"client_{cid:02d}.parquet")
+                c_file = os.path.join(scenario_dir, f"task_{task_id}", f"client_{cid:02d}.csv")
+                df_c = pd.read_parquet(p_file) if os.path.isfile(p_file) else pd.read_csv(c_file)
+                from data.schema import get_feature_columns
+                f_cols = get_feature_columns(df_c)
+                X_c = df_c[f_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).values.astype(np.float32)
+                y_c = np.array([LABEL2ID.get(lbl, -1) for lbl in df_c["label"].values], dtype=np.int64)
+                from data.dataset import TabularMalwareDataset
+                from torch.utils.data import DataLoader
+                ds_c = TabularMalwareDataset(X_c, y_c)
+                train_loaders[cid] = DataLoader(ds_c, batch_size=exp_cfg.fl.batch_size, shuffle=True)
+
+            task_metrics = server.run_task(
+                task_id=task_id,
+                n_new_classes=3,
+                client_ids=task_cids,
+                train_loaders=train_loaders,
+                n_rounds=args.rounds_per_task,
+                n_epochs=args.local_epochs,
+            )
+            task_metrics["task_id"] = task_id
+            task_metrics["task_name"] = f"Task_{task_id + 1}"
+            all_task_results.append(task_metrics)
+
+            ck_path = task_metrics["final_checkpoint_path"]
+            if ck_path is None:
+                raise RuntimeError(f"Task {task_id + 1} produced no round checkpoint")
+            checkpoint_paths.append(ck_path)
+
+        final_results = {
+            "all_task_results": all_task_results,
+            "continual_matrix": evaluator.continual_matrix.get_summary_dict(),
+        }
+        export_experiment_results(
+            workbook_path=os.path.join(exp_cfg.output_root, "evaluation_results.xlsx"),
+            experiment_name=exp_cfg.exp_name,
+            method=args.method,
+            setting="federated",
+            rounds_per_task=args.rounds_per_task,
+            client_num=args.n_clients,
+            patch_size=exp_cfg.fl.batch_size,
+            test_location=resolve_test_location(
+                exp_cfg.scenario.prepared_data_dir,
+                exp_cfg.scenario.feature_type,
+            ),
+            task_results=all_task_results,
+            checkpoint_paths=checkpoint_paths,
+            artifact_dir=os.path.join(exp_cfg.get_exp_dir(), "confusion_matrices"),
+        )
+
 
     elif args.mode == "centralized":
         # Load centralized task data

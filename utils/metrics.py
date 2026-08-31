@@ -14,6 +14,78 @@ from sklearn.metrics import (
 import torch
 
 
+CLASSIFICATION_METRIC_KEYS: Tuple[str, ...] = (
+    "accuracy",
+    "precision_macro",
+    "recall_macro",
+    "f1_macro",
+    "precision_micro",
+    "recall_micro",
+    "f1_micro",
+    "precision_weighted",
+    "recall_weighted",
+    "f1_weighted",
+)
+
+CLASSIFICATION_METRIC_LABELS = {
+    "accuracy": "Accuracy",
+    "precision_macro": "Macro Precision",
+    "recall_macro": "Macro Recall",
+    "f1_macro": "Macro F1",
+    "precision_micro": "Micro Precision",
+    "recall_micro": "Micro Recall",
+    "f1_micro": "Micro F1",
+    "precision_weighted": "Weighted Precision",
+    "recall_weighted": "Weighted Recall",
+    "f1_weighted": "Weighted F1",
+}
+
+
+def primary_classification_metrics(metrics: Dict[str, Any]) -> Dict[str, float]:
+    """Return the ten required test metrics in their reporting order."""
+    missing = [key for key in CLASSIFICATION_METRIC_KEYS if key not in metrics]
+    if missing:
+        raise KeyError(f"Evaluation result is missing metrics: {', '.join(missing)}")
+    return {key: float(metrics[key]) for key in CLASSIFICATION_METRIC_KEYS}
+
+
+def format_classification_metrics(metrics: Dict[str, Any]) -> str:
+    """Format the required metrics as percentages for console/file logs."""
+    primary_metrics = primary_classification_metrics(metrics)
+    return " | ".join(
+        f"{CLASSIFICATION_METRIC_LABELS[key]}: {value * 100:.2f}%"
+        for key, value in primary_metrics.items()
+    )
+
+
+def format_confusion_matrix(
+    metrics: Dict[str, Any],
+    label_names: Optional[Dict[int, str]] = None,
+) -> str:
+    """Format a labeled confusion matrix for task-final test logs."""
+    matrix = metrics.get("confusion_matrix", [])
+    labels = list(metrics.get("confusion_matrix_labels", []))
+    if not matrix:
+        return "Confusion Matrix: unavailable (no evaluated samples)"
+
+    matrix_array = np.asarray(matrix, dtype=np.int64)
+    if matrix_array.shape != (len(labels), len(labels)):
+        raise ValueError("Confusion matrix dimensions must match its labels")
+
+    displayed_labels = [
+        label_names.get(int(label), str(label)) if label_names else str(label)
+        for label in labels
+    ]
+    rows = "\n".join(
+        f"  {label}: {row.tolist()}"
+        for label, row in zip(displayed_labels, matrix_array)
+    )
+    return (
+        "Confusion Matrix (rows=true, columns=predicted)\n"
+        f"  labels: {displayed_labels}\n{rows}"
+    )
+
+
 def compute_fscil_session_metrics(
     task_results: List[Dict[str, Any]],
 ) -> Dict[str, Any]:

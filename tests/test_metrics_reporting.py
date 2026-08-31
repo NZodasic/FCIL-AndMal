@@ -1,13 +1,20 @@
 """Tests for the complete classification metric and result-reporting schema."""
 
 import importlib.util
+import csv
 import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-from utils.metrics import compute_classification_metrics
+from utils.logging import ExperimentLogger
+from utils.metrics import (
+    CLASSIFICATION_METRIC_KEYS,
+    compute_classification_metrics,
+    format_classification_metrics,
+    format_confusion_matrix,
+)
 from utils.results import (
     RESULT_COLUMNS,
     build_result_rows,
@@ -43,6 +50,58 @@ class TestMetricsReporting(unittest.TestCase):
         self.assertTrue(expected.issubset(metrics))
         self.assertEqual(len(metrics["confusion_matrix"]), 3)
         self.assertEqual(metrics["confusion_matrix_labels"], [0, 1, 2])
+
+        formatted = format_classification_metrics(metrics)
+        for label in (
+            "Accuracy",
+            "Macro Precision",
+            "Macro Recall",
+            "Macro F1",
+            "Micro Precision",
+            "Micro Recall",
+            "Micro F1",
+            "Weighted Precision",
+            "Weighted Recall",
+            "Weighted F1",
+        ):
+            self.assertIn(label, formatted)
+
+    def test_evaluation_logger_records_all_metrics_and_final_matrix(self):
+        metrics = compute_classification_metrics(
+            np.array([0, 0, 1, 1]),
+            np.array([0, 1, 1, 1]),
+            seen_classes=[0, 1],
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            logger = ExperimentLogger(temp_dir, "reporting")
+            logger.log_evaluation(
+                metrics,
+                context="Task 1 | Epoch 5/10 | Test",
+                task_id=0,
+                step=5,
+            )
+            intermediate_log = Path(temp_dir, "reporting.log").read_text()
+            self.assertNotIn("Confusion Matrix", intermediate_log)
+
+            logger.log_evaluation(
+                metrics,
+                context="Task 1 | Epoch 10/10 | Final Test",
+                task_id=0,
+                step=10,
+                include_confusion_matrix=True,
+                label_names={0: "Benign", 1: "Malware"},
+            )
+            logger.close()
+
+            log_text = Path(temp_dir, "reporting.log").read_text()
+            self.assertIn("Confusion Matrix", log_text)
+            self.assertIn("Benign", format_confusion_matrix(
+                metrics, label_names={0: "Benign", 1: "Malware"}
+            ))
+            with Path(temp_dir, "reporting_metrics.csv").open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(set(CLASSIFICATION_METRIC_KEYS).issubset(rows[0]))
 
     def test_federated_rows_use_cumulative_task_final_rounds(self):
         task_results = []

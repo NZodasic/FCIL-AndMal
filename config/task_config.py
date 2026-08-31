@@ -176,5 +176,17 @@ FUSED_FEATURE_DIM = STATIC_FEATURE_DIM + DYNAMIC_FEATURE_DIM
 # Minimum samples per client per label
 MIN_SAMPLES_PER_LABEL_CLIENT = 30
 
-# Default batch size (minimum)
-DEFAULT_BATCH_SIZE = 256
+# Fixed experiment batch sizes.
+FEDERATED_BATCH_SIZE = 256
+CENTRALIZED_BATCH_SIZE = 1024
+DEFAULT_BATCH_SIZE = FEDERATED_BATCH_SIZE
+
+
+def get_batch_size_for_mode(mode: str) -> int:
+    """Return the fixed batch size for an experiment execution mode."""
+    normalized_mode = mode.lower()
+    if normalized_mode == "federated":
+        return FEDERATED_BATCH_SIZE
+    if normalized_mode == "centralized":
+        return CENTRALIZED_BATCH_SIZE
+    raise ValueError("mode must be 'federated' or 'centralized'")

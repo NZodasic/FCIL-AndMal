@@ -20,7 +20,9 @@ PARTITION_DIR="./fl_data_partitions"
 OUTPUT_ROOT="./EXPERIMENT"
 ROUNDS=50
 EPOCHS=5
-BATCH_SIZE=256
+FL_BATCH_SIZE=256
+CENTRAL_BATCH_SIZE=1024
+CENTRAL_ROUNDS=250
 SEED=42
 
 # ------------------------------------------------------------------------------
@@ -69,8 +71,8 @@ python3 main.py \
     --mode centralized \
     --feature_type dynamic \
     --method finetune \
-    --rounds_per_task $ROUNDS \
-    --batch_size $BATCH_SIZE \
+    --rounds_per_task $CENTRAL_ROUNDS \
+    --batch_size $CENTRAL_BATCH_SIZE \
     --output_root "$OUTPUT_ROOT" \
     --seed $SEED
 
@@ -82,8 +84,8 @@ python3 main.py \
     --fscil_k_shot 5 \
     --fscil_query_per_class 5 \
     --fscil_mask_probability 0.1 \
-    --rounds_per_task $ROUNDS \
-    --batch_size $BATCH_SIZE \
+    --rounds_per_task $CENTRAL_ROUNDS \
+    --batch_size $CENTRAL_BATCH_SIZE \
     --output_root "$OUTPUT_ROOT" \
     --seed $SEED
 
@@ -91,8 +93,8 @@ python3 main.py \
     --mode centralized \
     --feature_type dynamic \
     --method joint \
-    --rounds_per_task $ROUNDS \
-    --batch_size $BATCH_SIZE \
+    --rounds_per_task $CENTRAL_ROUNDS \
+    --batch_size $CENTRAL_BATCH_SIZE \
     --output_root "$OUTPUT_ROOT" \
     --seed $SEED
 
@@ -112,7 +114,7 @@ for METHOD in "${METHODS[@]}"; do
         --dirichlet_alpha 0.5 \
         --rounds_per_task $ROUNDS \
         --local_epochs $EPOCHS \
-        --batch_size $BATCH_SIZE \
+        --batch_size $FL_BATCH_SIZE \
         --buffer_size 20 \
         --output_root "$OUTPUT_ROOT" \
         --seed $SEED
@@ -128,8 +130,8 @@ for FEAT in "static" "fused"; do
         --feature_type "$FEAT" \
         --method malfscil \
         --fscil_k_shot 5 \
-        --rounds_per_task $ROUNDS \
-        --batch_size $BATCH_SIZE \
+        --rounds_per_task $CENTRAL_ROUNDS \
+        --batch_size $CENTRAL_BATCH_SIZE \
         --output_root "$OUTPUT_ROOT" \
         --seed $SEED
 done
@@ -144,8 +146,8 @@ for SHOTS in 1 10; do
         --feature_type dynamic \
         --method malfscil \
         --fscil_k_shot "$SHOTS" \
-        --rounds_per_task $ROUNDS \
-        --batch_size $BATCH_SIZE \
+        --rounds_per_task $CENTRAL_ROUNDS \
+        --batch_size $CENTRAL_BATCH_SIZE \
         --output_root "$OUTPUT_ROOT" \
         --seed $SEED
 done

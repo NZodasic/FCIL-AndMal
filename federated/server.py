@@ -12,6 +12,8 @@ import torch.nn as nn
 
 from federated.client import FLClient
 from federated.aggregators.base import BaseAggregator, FedAvg
+from config import ID2LABEL
+from utils.metrics import format_classification_metrics, format_confusion_matrix
 
 
 class FLServer:
@@ -28,7 +30,8 @@ class FLServer:
         device: str = 'cuda',
         config: Optional[Any] = None,
         evaluator: Optional[Any] = None,
-        logger: Optional[Any] = None
+        logger: Optional[Any] = None,
+        checkpoint_manager: Optional[Any] = None,
     ):
         if global_model is None and config is not None:
             from models.fcil_model import FCILNet
@@ -37,6 +40,7 @@ class FLServer:
         self.config = config
         self.evaluator = evaluator
         self.logger = logger
+        self.checkpoint_manager = checkpoint_manager
         self.aggregator = aggregator or FedAvg()
         self.device = device
 
@@ -238,12 +242,20 @@ class FLServer:
             self.clients[cid].before_task(task_id, n_new_classes)
 
         # Expand global model if needed
-        if task_id > 0 and hasattr(self.global_model, 'expand_classifier'):
-            self.global_model.expand_classifier(n_new_classes)
+        if task_id > 0:
+            if hasattr(self.global_model, 'expand_classes'):
+                self.global_model.expand_classes(n_new_classes)
+            elif hasattr(self.global_model, 'expand_classifier'):
+                self.global_model.expand_classifier(n_new_classes)
+            else:
+                raise AttributeError(
+                    "Global model does not support incremental class expansion"
+                )
             self.global_model.to(self.device)
 
         # Run FL rounds
         round_metrics = []
+        round_checkpoint_paths = []
         for round_idx in range(n_rounds):
             metrics = self.run_round(
                 client_ids,
@@ -251,6 +263,20 @@ class FLServer:
                 n_epochs,
                 **kwargs
             )
+            local_round = round_idx + 1
+            global_round = task_id * n_rounds + local_round
+            metrics["round"] = local_round
+            metrics["global_round"] = global_round
+            if self.checkpoint_manager is not None:
+                checkpoint_path = self.checkpoint_manager.save_weights_checkpoint(
+                    self.global_model,
+                    task_id=task_id,
+                    step_type="round",
+                    step_id=local_round,
+                    global_step=global_round,
+                )
+                metrics["checkpoint_path"] = checkpoint_path
+                round_checkpoint_paths.append(checkpoint_path)
             round_metrics.append(metrics)
 
             if (round_idx + 1) % 10 == 0 or round_idx == 0:
@@ -270,12 +296,34 @@ class FLServer:
             final_evaluation = self.evaluator.evaluate_all_seen_tasks(
                 self.global_model, task_id
             )
+            global_round = (task_id + 1) * n_rounds
+            context = (
+                f"FL Task {task_id + 1} | Global Round {global_round} "
+                f"(task round {n_rounds}/{n_rounds}) | Final Test"
+            )
+            if self.logger is not None and hasattr(self.logger, "log_evaluation"):
+                self.logger.log_evaluation(
+                    final_evaluation,
+                    context=context,
+                    task_id=task_id,
+                    step=global_round,
+                    round_id=global_round,
+                    include_confusion_matrix=True,
+                    label_names=ID2LABEL,
+                )
+            else:
+                print(f"{context} | {format_classification_metrics(final_evaluation)}")
+                print(format_confusion_matrix(final_evaluation, label_names=ID2LABEL))
 
         task_metrics = {
             'task_id': task_id,
             'n_rounds': n_rounds,
             'n_clients': len(client_ids),
             'round_metrics': round_metrics,
+            'round_checkpoint_paths': round_checkpoint_paths,
+            'final_checkpoint_path': (
+                round_checkpoint_paths[-1] if round_checkpoint_paths else None
+            ),
             **final_evaluation,
         }
 
