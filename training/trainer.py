@@ -273,6 +273,11 @@ class CentralizedTrainer:
             )
             self.logger.log_task_evaluation(task_id, f"Task_{task_id + 1}", eval_metrics)
 
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
             workbook_path = export_experiment_results(
                 workbook_path=os.path.join(self.config.output_root, "evaluation_results.xlsx"),
                 experiment_name=self.config.exp_name,

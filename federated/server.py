@@ -125,6 +125,12 @@ class FLServer:
                 client_steps
             )
 
+        del client_models
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return self.global_model
 
     def aggregate_prototypes(self, client_ids: List[int]) -> None:
@@ -267,7 +273,7 @@ class FLServer:
             global_round = task_id * n_rounds + local_round
             metrics["round"] = local_round
             metrics["global_round"] = global_round
-            if self.checkpoint_manager is not None:
+            if self.checkpoint_manager is not None and (round_idx == n_rounds - 1 or (round_idx + 1) % 10 == 0):
                 checkpoint_path = self.checkpoint_manager.save_weights_checkpoint(
                     self.global_model,
                     task_id=task_id,
@@ -289,6 +295,10 @@ class FLServer:
                     task_id,
                     train_loader=train_loaders[cid]
                 )
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # Evaluation happens once, after the task's final communication round.
         final_evaluation = {}

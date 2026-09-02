@@ -403,8 +403,9 @@ def main():
                 df_c = pd.read_parquet(p_file) if os.path.isfile(p_file) else pd.read_csv(c_file)
                 from data.schema import get_feature_columns
                 f_cols = get_feature_columns(df_c)
-                X_c = df_c[f_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).values.astype(np.float32)
+                X_c = df_c[f_cols].to_numpy(dtype=np.float32, copy=False)
                 y_c = np.array([LABEL2ID.get(lbl, -1) for lbl in df_c["label"].values], dtype=np.int64)
+                del df_c
                 from data.dataset import TabularMalwareDataset
                 from torch.utils.data import DataLoader
                 ds_c = TabularMalwareDataset(X_c, y_c)
@@ -426,6 +427,13 @@ def main():
             if ck_path is None:
                 raise RuntimeError(f"Task {task_id + 1} produced no round checkpoint")
             checkpoint_paths.append(ck_path)
+
+            train_loaders.clear()
+            del train_loaders
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         final_results = {
             "all_task_results": all_task_results,
@@ -466,10 +474,13 @@ def main():
 
             t_df = pd.concat(t_task_dfs, ignore_index=True)
             f_cols = get_feature_columns(t_df)
-            X_t = t_df[f_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0).values.astype(np.float32)
+            X_t = t_df[f_cols].to_numpy(dtype=np.float32, copy=False)
             y_t = np.array([LABEL2ID.get(lbl, -1) for lbl in t_df["label"].values], dtype=np.int64)
             full_train_X[t] = X_t
             full_train_y[t] = y_t
+            del t_task_dfs, t_df
+            import gc
+            gc.collect()
 
         trainer = CentralizedTrainer(
             config=exp_cfg,
