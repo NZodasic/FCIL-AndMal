@@ -199,17 +199,11 @@ class CentralizedTrainer:
                         epoch_loss += loss.item()
                         epoch_batches += 1
 
+                avg_loss = epoch_loss / max(1, epoch_batches)
                 is_final_epoch = ep == epochs_per_task - 1
-                if not is_final_epoch:
-                    self.checkpoint_mgr.save_weights_checkpoint(
-                        self.model,
-                        task_id=task_id,
-                        step_type="epoch",
-                        step_id=ep + 1,
-                        global_step=task_id * epochs_per_task + ep + 1,
-                    )
                 if (ep + 1) % 5 == 0 and not is_final_epoch:
-                    avg_loss = epoch_loss / max(1, epoch_batches)
+                    # Interim test every 5 epochs (excluding the final epoch,
+                    # which is handled with confusion matrix after the loop).
                     interim_metrics = self.evaluator.evaluate_all_seen_tasks(self.model, task_id)
                     context = (
                         f"Centralized Task {task_id + 1} | "
@@ -224,7 +218,8 @@ class CentralizedTrainer:
                     )
                     self.model.train()
                 elif is_final_epoch:
-                    avg_loss = epoch_loss / max(1, epoch_batches)
+                    # Log final epoch loss; full evaluation with confusion matrix
+                    # follows after the loop.
                     self.logger.info(
                         f"Centralized Task {task_id + 1} | "
                         f"Epoch {ep + 1}/{epochs_per_task} | Loss: {avg_loss:.4f}"

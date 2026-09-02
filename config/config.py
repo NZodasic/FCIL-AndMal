@@ -170,10 +170,10 @@ class IncrementalConfig:
     malfsil_prototype_weight: float = 0.1
 
     def __post_init__(self):
-        if self.method_name.lower() == 'malfsil':
-            self.method_name = 'malfscil'
-        if self.strategy.lower() == 'malfsil':
-            self.strategy = 'malfscil'
+        # NOTE: 'malfsil' and 'malfscil' are intentionally distinct methods:
+        #   - malfscil: centralized FSCIL (VAE + ArcFace + graph attention)
+        #   - malfsil:  FL-compatible three-tier (replay + distillation + prototype)
+        # Do NOT rename one to the other.
         if self.fscil_n_way <= 0 or self.fscil_k_shot <= 0:
             raise ValueError('FSCIL n_way and k_shot must be positive')
         if self.fscil_query_per_class < 0:
