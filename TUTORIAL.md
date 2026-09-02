@@ -1,3 +1,4 @@
+# Hướng dẫn Chạy Benchmark Pipeline (FCIL-AndMal2020)
 
 ---
 
@@ -5,7 +6,7 @@
 ```bash
 cd /path/to/FCIL-AndMal
 ```
-*(Thay `/path/to/FCIL-AndMal` bằng đường dẫn thực tế đến folder project của bạn trên Mac)*
+*(Thay `/path/to/FCIL-AndMal` bằng đường dẫn thực tế đến folder project trên máy Mac của bạn)*
 
 ---
 
@@ -20,31 +21,44 @@ conda activate <ten_env_cua_ban>
 
 ---
 
-### 3. Kiểm tra danh sách 16 bài thử nghiệm (để xác nhận)
+### 3. Kiểm tra danh sách kịch bản thử nghiệm
 ```bash
 python3 run_all.py --list
 ```
+*Lệnh này hiển thị 2 kịch bản Client (20 clients và 50 clients), cùng danh sách 10 bài toán thực nghiệm cốt lõi.*
 
 ---
 
 ### 4. Chạy kiểm tra nhanh (Dry Run - không tốn thời gian train)
-Lệnh này giúp bạn kiểm tra toàn bộ luồng tự động tìm `./Dataset`, chia data và tạo lệnh mà không mất thời gian đợi train:
+Lệnh này giúp bạn kiểm tra toàn bộ luồng tự động tìm `./Dataset`, chia data và tạo lệnh mà không mất thời gian chờ train:
 ```bash
 python3 run_all.py --dry_run
 ```
 
 ---
 
-### 5. LỆNH CHÍNH — Chạy toàn bộ Benchmark (Stage 0, 1, 2 + 16 Experiments)
-```bash
-python3 run_all.py
-```
+### 5. CÁC LỆNH CHẠY CHÍNH
+
+* **Chạy Kịch bản 20 Clients (10 Experiments cho 20 clients):**
+  ```bash
+  python3 run_all.py --clients 20
+  ```
+
+* **Chạy Kịch bản 50 Clients (10 Experiments cho 50 clients):**
+  ```bash
+  python3 run_all.py --clients 50
+  ```
+
+* **Chạy TOÀN BỘ cả 2 Kịch bản 20 Clients và 50 Clients (20 runs total):**
+  ```bash
+  python3 run_all.py
+  ```
 
 ---
 
-### 💡 Các lệnh tiện ích khác (chạy từng phần nếu muốn):
+### 💡 Các tùy chọn hữu ích khác:
 
-* **Chạy ẩn trong nền (để treo máy Mac chạy không lo tắt terminal):**
+* **Chạy ẩn trong nền (treo máy Mac không lo tắt terminal):**
   ```bash
   nohup python3 run_all.py > run_benchmark.log 2>&1 &
   ```
@@ -53,24 +67,28 @@ python3 run_all.py
   tail -f run_benchmark.log
   ```
 
-* **Chỉ chạy 4 bài Centralized:**
+* **Chỉ chạy 4 bài Centralized cho 20 clients:**
   ```bash
-  python3 run_all.py --only Centralized
+  python3 run_all.py --clients 20 --only Centralized
   ```
 
-* **Chỉ chạy các bài FL 20 Client:**
+* **Chỉ chạy các bài FL cho 50 clients:**
   ```bash
-  python3 run_all.py --only K20
-  ```
-
-* **Chỉ chạy các bài FL 50 Client:**
-  ```bash
-  python3 run_all.py --only K50
+  python3 run_all.py --clients 50 --only FL
   ```
 
 ---
 
-### 📊 Kết quả sau khi chạy xong:
-- **Tệp Excel tổng hợp full metrics:** `./EXPERIMENT/evaluation_results.xlsx`
-- **Tệp JSON tóm tắt:** `./EXPERIMENT/run_summary.json`
-- **Log chi tiết từng experiment:** `./EXPERIMENT/_logs/<Case_Name>.stdout.log`
+### 📊 Cấu trúc Kết quả Xuất ra:
+- **Kịch bản 20 Clients:**
+  - Tệp Excel metrics: `./EXPERIMENT/20clients/evaluation_results.xlsx`
+  - Tệp JSON tóm tắt: `./EXPERIMENT/20clients/run_summary.json`
+  - Log chi tiết từng bài: `./EXPERIMENT/20clients/_logs/<Case_Name>.stdout.log`
+
+- **Kịch bản 50 Clients:**
+  - Tệp Excel metrics: `./EXPERIMENT/50clients/evaluation_results.xlsx`
+  - Tệp JSON tóm tắt: `./EXPERIMENT/50clients/run_summary.json`
+  - Log chi tiết từng bài: `./EXPERIMENT/50clients/_logs/<Case_Name>.stdout.log`
+
+- **Tóm tắt tổng quát:**
+  - `./EXPERIMENT/run_summary.json`
