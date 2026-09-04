@@ -249,14 +249,17 @@ class FLServer:
 
         # Expand global model if needed
         if task_id > 0:
-            if hasattr(self.global_model, 'expand_classes'):
-                self.global_model.expand_classes(n_new_classes)
-            elif hasattr(self.global_model, 'expand_classifier'):
-                self.global_model.expand_classifier(n_new_classes)
-            else:
-                raise AttributeError(
-                    "Global model does not support incremental class expansion"
-                )
+            target_classes = (task_id + 1) * self.config.model.classes_per_task
+            if self.global_model.current_classes < target_classes:
+                needed = target_classes - self.global_model.current_classes
+                if hasattr(self.global_model, 'expand_classes'):
+                    self.global_model.expand_classes(needed)
+                elif hasattr(self.global_model, 'expand_classifier'):
+                    self.global_model.expand_classifier(needed)
+                else:
+                    raise AttributeError(
+                        "Global model does not support incremental class expansion"
+                    )
             self.global_model.to(self.device)
 
         # Run FL rounds

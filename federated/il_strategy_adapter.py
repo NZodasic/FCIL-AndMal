@@ -49,15 +49,16 @@ class ILMethodStrategyAdapter:
     def before_task(self, task_id: int, n_new_classes: int) -> None:
         """Expand model head and call IL pre-task hook."""
         self.current_task = task_id
-        if task_id > 0:
-            self.model.expand_classes(num_new_classes=n_new_classes)
+        target_classes = (task_id + 1) * self.classes_per_task
+        if self.model.current_classes < target_classes:
+            self.model.expand_classes(num_new_classes=target_classes - self.model.current_classes)
         self.model.to(self.device)
         self.il_method.before_task(
             task_id=task_id,
             model=self.model,
             device=self.device,
         )
-        self.n_classes_so_far = (task_id + 1) * self.classes_per_task
+        self.n_classes_so_far = target_classes
 
     def train_task(
         self,

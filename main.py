@@ -383,6 +383,10 @@ def main():
             for cid in task_cids:
                 if cid not in server.clients:
                     client_model = FCILNet(exp_cfg.model)
+                    if server.global_model.current_classes > client_model.current_classes:
+                        client_model.expand_classes(
+                            server.global_model.current_classes - client_model.current_classes
+                        )
                     client_il = build_il_method(exp_cfg.il)
                     adapter = ILMethodStrategyAdapter(
                         model=client_model,
@@ -401,7 +405,6 @@ def main():
                 p_file = os.path.join(scenario_dir, f"task_{task_id}", f"client_{cid:02d}.parquet")
                 c_file = os.path.join(scenario_dir, f"task_{task_id}", f"client_{cid:02d}.csv")
                 df_c = pd.read_parquet(p_file) if os.path.isfile(p_file) else pd.read_csv(c_file)
-                from data.schema import get_feature_columns
                 f_cols = get_feature_columns(df_c)
                 X_c = df_c[f_cols].to_numpy(dtype=np.float32, copy=False)
                 y_c = np.array([LABEL2ID.get(lbl, -1) for lbl in df_c["label"].values], dtype=np.int64)
