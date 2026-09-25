@@ -88,11 +88,11 @@ SEED            = 42
 # ──────────────────────────────────────────────────────────────────────────────
 def check_dataset(prepared_dir: Path, partition_dir: Path, feature_type: str, clients_list: List[int]) -> Dict[str, bool]:
     """Return dict of readiness flags for stage 1 and each requested stage 2 partition."""
-    test_parquet  = prepared_dir / feature_type / "test.parquet"
-    train_parquet = prepared_dir / feature_type / "train.parquet"
+    test_ready  = (prepared_dir / feature_type / "test.parquet").is_file() or (prepared_dir / feature_type / "test.csv").is_file()
+    train_ready = (prepared_dir / feature_type / "train.parquet").is_file() or (prepared_dir / feature_type / "train.csv").is_file()
     res = {
-        "stage1_test":  test_parquet.is_file(),
-        "stage1_train": train_parquet.is_file(),
+        "stage1_test":  test_ready,
+        "stage1_train": train_ready,
     }
     for k in clients_list:
         part_k = partition_dir / feature_type / f"{k}clients" / "partition_table.csv"
@@ -114,10 +114,8 @@ def run_stage1(
         sys.executable, "-m", "data.prepare_dataset",
         "--root", str(raw_dir),
         "--output_dir", str(prepared_dir),
-        "--type", "all",
         "--type", stage1_type,
         "--seed", str(seed),
-        "--strict_class_coverage",
         "--data_provenance",
         "synthetic_development" if synthetic_development else "user_supplied",
     ]
@@ -128,6 +126,7 @@ def run_stage1(
         return True
     r = subprocess.run(cmd)
     return r.returncode == 0
+
 
 
 
@@ -192,6 +191,11 @@ def ensure_dataset(
             feature_type=feature_type,
             allow_incomplete_benchmark=allow_incomplete_benchmark,
         ):
+            if feature_type == "dynamic" and not allow_incomplete_benchmark:
+                warn(
+                    "Hint: Real CIC-AndMal-2020 dynamic telemetry only contains 14 malware families and lacks 'Benign'.\n"
+                    "      Pass '--allow_incomplete_benchmark' to run benchmarks on the 14 available dynamic classes."
+                )
             raise RuntimeError("Stage 1 preparation FAILED. Aborting.")
         ok("Stage 1 complete.")
     else:
@@ -278,6 +282,23 @@ def run_experiment(
     return result.returncode == 0, elapsed
 
 
+def is_experiment_completed(scenario_output_dir: Path, full_case_tag: str, n_tasks: int = 5) -> bool:
+    """Check if an experiment directory exists with all tasks completed in its metrics CSV."""
+    for exp_dir in scenario_output_dir.glob(f"{full_case_tag}_*"):
+        if not exp_dir.is_dir():
+            continue
+        metrics_file = exp_dir / f"{exp_dir.name}_metrics.csv"
+        if metrics_file.is_file():
+            try:
+                with open(metrics_file, "r") as f:
+                    lines = [line.strip() for line in f if line.strip()]
+                if len(lines) >= n_tasks + 1:
+                    return True
+            except Exception:
+                pass
+    return False
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Summary printer
 # ──────────────────────────────────────────────────────────────────────────────
@@ -338,6 +359,8 @@ def parse_args() -> argparse.Namespace:
                    help="Skip Stage 1 & 2 preparation (assume data is ready)")
     p.add_argument("--dry_run",         action="store_true",
                    help="Print commands without executing")
+    p.add_argument("--skip_completed",   action="store_true", default=False,
+                   help="Skip experiment cases that have already finished all tasks successfully")
     p.add_argument("--only",            default=None,
                    help="Run only experiments whose case name contains this substring")
     p.add_argument("--list",            action="store_true",
@@ -447,6 +470,18 @@ def main() -> None:
             info(f"{'epochs' if mode=='centralized' else 'rounds'}/task="
                  f"{CENTRAL_EPOCHS if mode=='centralized' else FL_ROUNDS}"
                  + (f"  local_epochs={FL_LOCAL_EPOCHS}" if mode == "federated" else ""))
+
+            if args.skip_completed and is_experiment_completed(scenario_output_dir, full_case_tag):
+                ok(f"Skipping {full_case_tag} — already completed successfully.")
+                scenario_results.append({
+                    "case":    full_case_tag,
+                    "mode":    mode,
+                    "method":  method,
+                    "clients": k_clients,
+                    "success": True,
+                    "elapsed": 0.0,
+                })
+                continue
 
             cmd = build_cmd(
                 case_name=full_case_tag,

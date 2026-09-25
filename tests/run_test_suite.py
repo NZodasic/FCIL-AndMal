@@ -3,10 +3,14 @@ Master Test Suite Runner for FCIL-AndMal2020.
 Executes all unit, integration, model, method, and federated tests.
 """
 
+import os
 import sys
 import unittest
 
 sys.dont_write_bytecode = True
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
 if __name__ == "__main__":
     print("=" * 80)

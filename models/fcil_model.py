@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 
 from config import ModelConfig
-from models.backbones import build_backbone
+from models.backbones import build_backbone, SafeBatchNormContext
 from models.classifier import DynamicIncrementalClassifier
 
 
@@ -42,15 +42,17 @@ class FCILNet(nn.Module):
         return_features: bool = False,
         limit_to_current: bool = True
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        features = self.backbone(x)
-        logits = self.classifier(features, limit_to_current=limit_to_current)
-        if return_features:
-            return logits, features
-        return logits
+        with SafeBatchNormContext(self, x.size(0)):
+            features = self.backbone(x)
+            logits = self.classifier(features, limit_to_current=limit_to_current)
+            if return_features:
+                return logits, features
+            return logits
 
     def get_features(self, x: torch.Tensor) -> torch.Tensor:
         """Extract latent representation before classification layer."""
-        return self.backbone(x)
+        with SafeBatchNormContext(self, x.size(0)):
+            return self.backbone(x)
 
     def expand_classes(self, num_new_classes: int = 3) -> None:
         """Expand classifier head to accommodate newly introduced malware families."""

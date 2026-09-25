@@ -472,7 +472,13 @@ def main():
                 y_c = np.array([LABEL2ID.get(lbl, -1) for lbl in df_c["label"].values], dtype=np.int64)
                 del df_c
                 ds_c = TabularMalwareDataset(X_c, y_c)
-                train_loaders[cid] = DataLoader(ds_c, batch_size=exp_cfg.fl.batch_size, shuffle=True)
+                drop_last = len(ds_c) > exp_cfg.fl.batch_size and (len(ds_c) % exp_cfg.fl.batch_size == 1)
+                train_loaders[cid] = DataLoader(
+                    ds_c,
+                    batch_size=exp_cfg.fl.batch_size,
+                    shuffle=True,
+                    drop_last=drop_last,
+                )
 
             task_metrics = server.run_task(
                 task_id=task_id,

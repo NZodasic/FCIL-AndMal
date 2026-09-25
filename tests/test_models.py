@@ -87,6 +87,21 @@ class TestModels(unittest.TestCase):
         self.assertGreater(tot, 0)
         self.assertEqual(tot, trainable)
 
+    def test_single_sample_batch_training_stability(self):
+        """Verify that single-sample batches (N=1) in training mode do not crash BatchNorm1d."""
+        cfg = ModelConfig(backbone_type="hybrid_tcn_cnn", input_dim=141, latent_dim=128)
+        model = FCILNet(cfg)
+        model.train()
+
+        x_single = torch.randn(1, 141)
+        logits = model(x_single)
+        self.assertEqual(logits.shape, (1, 3))
+
+        loss = logits.sum()
+        loss.backward()
+        self.assertIsNotNone(model.classifier.weight.grad)
+
 
 if __name__ == "__main__":
     unittest.main()
+

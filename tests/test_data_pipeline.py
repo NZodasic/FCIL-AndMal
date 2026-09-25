@@ -219,9 +219,45 @@ class TestDataPipeline(unittest.TestCase):
         self.assertEqual(feature_cols, json.load(open(metadata_path))["feature_columns"])
         train_mean = train[feature_cols].mean().abs().max()
         self.assertLess(float(train_mean), 1e-4)
-        self.assertEqual(len(train), len(train["label"]))
-        self.assertEqual(len(test), len(test["label"]))
+    def test_08_run_stage1_cmd_and_allow_incomplete_benchmark(self):
+        """Verify run_stage1 properly adds or omits --strict_class_coverage."""
+        from pathlib import Path
+        from unittest.mock import patch
+        from run_all import run_stage1
+
+        with patch("subprocess.run") as mock_run:
+            # Case 1: allow_incomplete_benchmark=False -> must include --strict_class_coverage once
+            run_stage1(
+                raw_dir=Path(self.raw_dir),
+                prepared_dir=Path(self.prep_dir),
+                seed=42,
+                dry=False,
+                feature_type="dynamic",
+                allow_incomplete_benchmark=False,
+            )
+            self.assertTrue(mock_run.called)
+            cmd = mock_run.call_args[0][0]
+            self.assertEqual(cmd.count("--strict_class_coverage"), 1)
+            self.assertEqual(cmd.count("--type"), 1)
+            self.assertIn("dynamic", cmd)
+
+        with patch("subprocess.run") as mock_run:
+            # Case 2: allow_incomplete_benchmark=True -> must NOT include --strict_class_coverage
+            run_stage1(
+                raw_dir=Path(self.raw_dir),
+                prepared_dir=Path(self.prep_dir),
+                seed=42,
+                dry=False,
+                feature_type="dynamic",
+                allow_incomplete_benchmark=True,
+            )
+            self.assertTrue(mock_run.called)
+            cmd = mock_run.call_args[0][0]
+            self.assertEqual(cmd.count("--strict_class_coverage"), 0)
+            self.assertEqual(cmd.count("--type"), 1)
+            self.assertIn("dynamic", cmd)
 
 
 if __name__ == "__main__":
     unittest.main()
+

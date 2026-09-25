@@ -54,3 +54,4 @@ FCIL-AndMal-Result/
 *.log
 .agents/
 .claude/
+.DS_Store

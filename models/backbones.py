@@ -14,6 +14,31 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class SafeBatchNormContext:
+    """Context manager preventing BatchNorm crashes when a training batch has size 1.
+
+    When batch_size is 1, PyTorch's BatchNorm raises ValueError because sample variance
+    cannot be calculated with N=1. Temporarily setting training BatchNorms to eval mode
+    uses running statistics for that single-sample forward pass without affecting gradients.
+    """
+    def __init__(self, module: nn.Module, batch_size: int):
+        self.module = module
+        self.single_sample = (batch_size == 1 and module.training)
+        self.bns = []
+
+    def __enter__(self):
+        if self.single_sample:
+            for m in self.module.modules():
+                if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)) and m.training:
+                    m.eval()
+                    self.bns.append(m)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        for m in self.bns:
+            m.train()
+
+
 class MLPBackbone(nn.Module):
     """
     Multi-Layer Perceptron encoder with Batch Normalization, LeakyReLU, and Dropout.
@@ -51,7 +76,8 @@ class MLPBackbone(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        with SafeBatchNormContext(self, x.size(0)):
+            return self.net(x)
 
 
 class CNN1DBackbone(nn.Module):
@@ -89,12 +115,13 @@ class CNN1DBackbone(nn.Module):
         self.fc = nn.Linear(channels[-1], latent_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-        feat_maps = self.conv(x)
-        pooled = self.pool(feat_maps).squeeze(2)
-        out = self.fc(pooled)
-        return out
+        with SafeBatchNormContext(self, x.size(0)):
+            if x.dim() == 2:
+                x = x.unsqueeze(1)
+            feat_maps = self.conv(x)
+            pooled = self.pool(feat_maps).squeeze(2)
+            out = self.fc(pooled)
+            return out
 
 
 class TemporalBlock(nn.Module):
@@ -117,17 +144,18 @@ class TemporalBlock(nn.Module):
         self.padding = padding
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        res = x if self.downsample is None else self.downsample(x)
-        out = self.conv1(x)
-        # Chomp causal padding
-        out = out[:, :, :-self.padding] if self.padding > 0 else out
-        out = self.dropout1(self.relu1(self.bn1(out)))
+        with SafeBatchNormContext(self, x.size(0)):
+            res = x if self.downsample is None else self.downsample(x)
+            out = self.conv1(x)
+            # Chomp causal padding
+            out = out[:, :, :-self.padding] if self.padding > 0 else out
+            out = self.dropout1(self.relu1(self.bn1(out)))
 
-        out = self.conv2(out)
-        out = out[:, :, :-self.padding] if self.padding > 0 else out
-        out = self.dropout2(self.relu2(self.bn2(out)))
+            out = self.conv2(out)
+            out = out[:, :, :-self.padding] if self.padding > 0 else out
+            out = self.dropout2(self.relu2(self.bn2(out)))
 
-        return F.relu(out + res)
+            return F.relu(out + res)
 
 
 class TCNBackbone(nn.Module):
@@ -159,11 +187,13 @@ class TCNBackbone(nn.Module):
         self.fc = nn.Linear(num_channels[-1], latent_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-        out = self.tcn(x)
-        pooled = self.pool(out).squeeze(2)
-        return self.fc(pooled)
+        with SafeBatchNormContext(self, x.size(0)):
+            if x.dim() == 2:
+                x = x.unsqueeze(1)
+            out = self.tcn(x)
+            pooled = self.pool(out).squeeze(2)
+            return self.fc(pooled)
+
 
 
 # ==============================================================================
@@ -239,28 +269,29 @@ class HybridTCNCNNBackbone(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Input shape: (Batch, Input_Dim) -> (Batch, 1, Input_Dim)
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
+        with SafeBatchNormContext(self, x.size(0)):
+            # Input shape: (Batch, Input_Dim) -> (Batch, 1, Input_Dim)
+            if x.dim() == 2:
+                x = x.unsqueeze(1)
 
-        # 1. Multi-scale CNN Stage
-        c3 = self.cnn_conv1_k3(x)
-        c5 = self.cnn_conv1_k5(x)
-        cnn_out = torch.cat([c3, c5], dim=1)
-        cnn_out = self.cnn_relu(self.cnn_bn1(cnn_out))
-        cnn_out = self.cnn_dropout(self.cnn_pool(self.cnn_relu(self.cnn_bn2(self.cnn_conv2(cnn_out)))))
+            # 1. Multi-scale CNN Stage
+            c3 = self.cnn_conv1_k3(x)
+            c5 = self.cnn_conv1_k5(x)
+            cnn_out = torch.cat([c3, c5], dim=1)
+            cnn_out = self.cnn_relu(self.cnn_bn1(cnn_out))
+            cnn_out = self.cnn_dropout(self.cnn_pool(self.cnn_relu(self.cnn_bn2(self.cnn_conv2(cnn_out)))))
 
-        # 2. TCN Temporal Dilated Residual Stage
-        tcn_out = self.tcn(cnn_out)
+            # 2. TCN Temporal Dilated Residual Stage
+            tcn_out = self.tcn(cnn_out)
 
-        # 3. Channel Attention Recalibration
-        pooled_temp = self.global_pool(tcn_out).squeeze(2)  # (Batch, tcn_channels[-1])
-        se_weights = self.se_fc(pooled_temp)                # (Batch, tcn_channels[-1])
-        calibrated = pooled_temp * se_weights
+            # 3. Channel Attention Recalibration
+            pooled_temp = self.global_pool(tcn_out).squeeze(2)  # (Batch, tcn_channels[-1])
+            se_weights = self.se_fc(pooled_temp)                # (Batch, tcn_channels[-1])
+            calibrated = pooled_temp * se_weights
 
-        # 4. Latent Embedding Projection
-        embedding = self.latent_head(calibrated)
-        return embedding
+            # 4. Latent Embedding Projection
+            embedding = self.latent_head(calibrated)
+            return embedding
 
 
 class FusedMultiModalBackbone(nn.Module):
@@ -310,15 +341,16 @@ class FusedMultiModalBackbone(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Split concatenated input into static and dynamic slices
-        x_static = x[:, :self.static_dim]
-        x_dynamic = x[:, self.static_dim:]
+        with SafeBatchNormContext(self, x.size(0)):
+            # Split concatenated input into static and dynamic slices
+            x_static = x[:, :self.static_dim]
+            x_dynamic = x[:, self.static_dim:]
 
-        emb_static = self.static_branch(x_static)
-        emb_dynamic = self.dynamic_branch(x_dynamic)
+            emb_static = self.static_branch(x_static)
+            emb_dynamic = self.dynamic_branch(x_dynamic)
 
-        fused = torch.cat([emb_static, emb_dynamic], dim=1)
-        return self.fusion_fc(fused)
+            fused = torch.cat([emb_static, emb_dynamic], dim=1)
+            return self.fusion_fc(fused)
 
 
 def build_backbone(

@@ -99,7 +99,8 @@ class FLTaskDataset:
         
         ds = TabularMalwareDataset(X, y)
         actual_batch_size = min(batch_size, len(ds)) if len(ds) > 0 else batch_size
-        return DataLoader(ds, batch_size=actual_batch_size, shuffle=shuffle, drop_last=drop_last)
+        safe_drop_last = drop_last or (len(ds) > actual_batch_size and len(ds) % actual_batch_size == 1)
+        return DataLoader(ds, batch_size=actual_batch_size, shuffle=shuffle, drop_last=safe_drop_last)
 
 
 def get_participating_clients(scenario_dir: str, task_id: int) -> List[int]:

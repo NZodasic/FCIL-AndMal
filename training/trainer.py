@@ -141,7 +141,13 @@ class CentralizedTrainer:
                     f"--feature_type {self.config.scenario.feature_type} --n_clients {self.config.scenario.n_clients} --output_dir {self.config.scenario.partition_output_dir}"
                 )
 
-            train_loader = DataLoader(ds, batch_size=self.config.fl.batch_size, shuffle=True)
+            drop_last = len(ds) > self.config.fl.batch_size and (len(ds) % self.config.fl.batch_size == 1)
+            train_loader = DataLoader(
+                ds,
+                batch_size=self.config.fl.batch_size,
+                shuffle=True,
+                drop_last=drop_last,
+            )
             optimization_loaders = [train_loader]
             if (
                 self.config.il.method_name == "malfscil"
@@ -151,11 +157,13 @@ class CentralizedTrainer:
                 query_dataset = TabularMalwareDataset(
                     session.query_X, session.query_y
                 )
+                drop_last_q = len(query_dataset) > self.config.fl.batch_size and (len(query_dataset) % self.config.fl.batch_size == 1)
                 optimization_loaders.append(
                     DataLoader(
                         query_dataset,
                         batch_size=self.config.fl.batch_size,
                         shuffle=True,
+                        drop_last=drop_last_q,
                     )
                 )
 
