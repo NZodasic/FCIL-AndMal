@@ -43,19 +43,21 @@ def fit_transform_splits(
         missing = [column for column in feature_columns if column not in frame.columns]
         if missing:
             raise ValueError(f"Split is missing feature columns: {missing[:5]}")
-        return frame.loc[:, feature_columns].apply(pd.to_numeric, errors="coerce")
+        sub = frame.loc[:, feature_columns]
+        if all(pd.api.types.is_numeric_dtype(t) for t in sub.dtypes):
+            return sub.astype(np.float32)
+        return sub.apply(pd.to_numeric, errors="coerce").astype(np.float32)
 
     train_numeric = numeric_frame(train_df)
     train_means = train_numeric.mean(axis=0).fillna(0.0)
     train_numeric = train_numeric.fillna(train_means)
 
     scaler = StandardScaler()
-    scaler.fit(train_numeric.to_numpy(dtype=np.float64, copy=False))
+    scaler.fit(train_numeric.to_numpy(dtype=np.float32, copy=False))
 
     def transform(frame: pd.DataFrame) -> pd.DataFrame:
-        transformed = frame.copy()
         values = numeric_frame(frame).fillna(train_means)
-        scaled = scaler.transform(values.to_numpy(dtype=np.float64, copy=False)).astype(
+        scaled = scaler.transform(values.to_numpy(dtype=np.float32, copy=False)).astype(
             np.float32
         )
         # Rebuild the frame so integer-typed source columns cannot reject the

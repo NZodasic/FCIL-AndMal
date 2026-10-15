@@ -58,3 +58,4 @@ Paper/
 .agents/
 .claude/
 .DS_Store
+nohup.out

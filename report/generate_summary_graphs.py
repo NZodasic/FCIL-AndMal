@@ -232,9 +232,13 @@ def fig3_task5_final_benchmark(runs):
                 "accuracy": last_t["accuracy"],
                 "macro_f1": last_t["macro_f1"],
             })
-            
+
+    if not t5_rows:
+        print("  [Notice] Skipping Figure 3 (no runs with completed Task 5 found yet).")
+        return
+
     df_t5 = pd.DataFrame(t5_rows).sort_values(by="accuracy", ascending=True)
-    
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7), sharey=True, dpi=300)
     
     # Palette based on setting
@@ -418,6 +422,10 @@ def fig6_recency_collapse_proof():
         "FL_MALFSIL_K20_FEDERATED_DYNAMIC_MALFSIL_FEDAVG_K20_E5_S5",
         "FL_MALFSIL_K20_FEDERATED_DYNAMIC_MALFSIL_FEDAVG_K20_E5_S5.jsonl")
     
+    if not (os.path.isfile(path_fedavg) and os.path.isfile(path_malfsil_cent) and os.path.isfile(path_malfsil_fl)):
+        print("  [Notice] Skipping Figure 6 (required JSONL evaluation files not found yet).")
+        return
+
     def get_last_recalls(jsonl_p):
         with open(jsonl_p) as f:
             lines = [json.loads(l) for l in f]
@@ -558,20 +566,24 @@ def fig8_master_overview_dashboard(runs):
                 "accuracy": last_t["accuracy"],
                 "color": "#1f497d" if r["setting"] == "centralized" else ("#2e75b6" if r["clients"] == 20 else "#ed7d31")
             })
-    df_t5 = pd.DataFrame(t5_rows).sort_values(by="accuracy", ascending=True)
-    y_pos = np.arange(len(df_t5))
-    bars = ax_b.barh(y_pos, df_t5["accuracy"], color=df_t5["color"], edgecolor="black", alpha=0.85, height=0.68)
-    ax_b.axvline(8.3824, color="crimson", linestyle="--", linewidth=1.5, label="Collapse Threshold")
-    ax_b.set_yticks(y_pos)
-    ax_b.set_yticklabels(df_t5["label"], fontsize=8.5)
-    ax_b.set_xlabel("Task 5 Final Accuracy (%)", fontweight="bold")
-    ax_b.set_title("(b) Final Task 5 Accuracy Ranking (All 16 Configurations)", fontweight="bold")
-    ax_b.grid(True, axis="x", linestyle="--", alpha=0.5)
-    ax_b.set_xlim(0, 19)
-    for b in bars:
-        w = b.get_width()
-        ax_b.text(w + 0.25, b.get_y() + b.get_height()/2, f"{w:.1f}%", va="center", fontsize=8)
-        
+    if t5_rows:
+        df_t5 = pd.DataFrame(t5_rows).sort_values(by="accuracy", ascending=True)
+        y_pos = np.arange(len(df_t5))
+        bars = ax_b.barh(y_pos, df_t5["accuracy"], color=df_t5["color"], edgecolor="black", alpha=0.85, height=0.68)
+        ax_b.axvline(8.3824, color="crimson", linestyle="--", linewidth=1.5, label="Collapse Threshold")
+        ax_b.set_yticks(y_pos)
+        ax_b.set_yticklabels(df_t5["label"], fontsize=8.5)
+        ax_b.set_xlabel("Task 5 Final Accuracy (%)", fontweight="bold")
+        ax_b.set_title("(b) Final Task 5 Accuracy Ranking (All 16 Configurations)", fontweight="bold")
+        ax_b.grid(True, axis="x", linestyle="--", alpha=0.5)
+        ax_b.set_xlim(0, 19)
+        for b in bars:
+            w = b.get_width()
+            ax_b.text(w + 0.25, b.get_y() + b.get_height()/2, f"{w:.1f}%", va="center", fontsize=8)
+    else:
+        ax_b.text(0.5, 0.5, "Task 5 data pending completion", ha="center", va="center", transform=ax_b.transAxes, fontsize=10, color="gray")
+        ax_b.set_title("(b) Final Task 5 Accuracy Ranking (Pending)", fontweight="bold")
+
     # Panel (c): Pareto Trade-off
     ax_c = axes[1, 0]
     cl_methods = [
@@ -595,7 +607,7 @@ def fig8_master_overview_dashboard(runs):
     ax_c.grid(True, linestyle="--", alpha=0.5)
     ax_c.set_xlim(15, 85)
     ax_c.set_ylim(4, 18)
-    
+
     # Panel (d): Recency Collapse Proof
     ax_d = axes[1, 1]
     path_fedavg = os.path.join(EXP_DIR, "20clients",
@@ -604,33 +616,37 @@ def fig8_master_overview_dashboard(runs):
     path_malfsil_cent = os.path.join(EXP_DIR, "20clients",
         "Centralized_MALFSIL_CENTRALIZED_DYNAMIC_MALFSIL",
         "Centralized_MALFSIL_CENTRALIZED_DYNAMIC_MALFSIL.jsonl")
-    
-    def get_rec(p):
-        with open(p) as f:
-            lines = [json.loads(l) for l in f]
-        last = [l for l in lines if "confusion_matrix" in l][-1]
-        cm = np.array(last["confusion_matrix"])
-        rsums = cm.sum(axis=1)
-        diag = np.diag(cm)
-        rec = np.zeros(len(rsums))
-        for i in range(len(rsums)):
-            if rsums[i] > 0:
-                rec[i] = (diag[i] / rsums[i]) * 100
-        return rec
-        
-    rec_avg = get_rec(path_fedavg)
-    rec_malf = get_rec(path_malfsil_cent)
-    x_cls = np.arange(len(CLASS_NAMES))
-    w_bar = 0.38
-    ax_d.bar(x_cls - w_bar/2, rec_avg, w_bar, label="FL_FedAvg_K20 (100% Collapse)", color="#d95f02", edgecolor="black", alpha=0.85)
-    ax_d.bar(x_cls + w_bar/2, rec_malf, w_bar, label="MALFSIL (Distillation + Prototypes)", color="#1b9e77", edgecolor="black", alpha=0.85)
-    ax_d.set_xticks(x_cls)
-    ax_d.set_xticklabels(CLASS_NAMES, rotation=45, ha="right", fontsize=8)
-    ax_d.set_ylabel("Class Recall (%)", fontweight="bold")
-    ax_d.set_title("(d) Proof of Recency Collapse: Class Recall Distribution", fontweight="bold")
-    ax_d.set_ylim(0, 105)
-    ax_d.grid(True, axis="y", linestyle="--", alpha=0.5)
-    ax_d.legend(loc="upper left", fontsize=8.5)
+
+    if os.path.isfile(path_fedavg) and os.path.isfile(path_malfsil_cent):
+        def get_rec(p):
+            with open(p) as f:
+                lines = [json.loads(l) for l in f]
+            last = [l for l in lines if "confusion_matrix" in l][-1]
+            cm = np.array(last["confusion_matrix"])
+            rsums = cm.sum(axis=1)
+            diag = np.diag(cm)
+            rec = np.zeros(len(rsums))
+            for i in range(len(rsums)):
+                if rsums[i] > 0:
+                    rec[i] = (diag[i] / rsums[i]) * 100
+            return rec
+
+        rec_avg = get_rec(path_fedavg)
+        rec_malf = get_rec(path_malfsil_cent)
+        x_cls = np.arange(len(CLASS_NAMES))
+        w_bar = 0.38
+        ax_d.bar(x_cls - w_bar/2, rec_avg, w_bar, label="FL_FedAvg_K20 (100% Collapse)", color="#d95f02", edgecolor="black", alpha=0.85)
+        ax_d.bar(x_cls + w_bar/2, rec_malf, w_bar, label="MALFSIL (Distillation + Prototypes)", color="#1b9e77", edgecolor="black", alpha=0.85)
+        ax_d.set_xticks(x_cls)
+        ax_d.set_xticklabels(CLASS_NAMES, rotation=45, ha="right", fontsize=8)
+        ax_d.set_ylabel("Class Recall (%)", fontweight="bold")
+        ax_d.set_title("(d) Proof of Recency Collapse: Class Recall Distribution", fontweight="bold")
+        ax_d.set_ylim(0, 105)
+        ax_d.grid(True, axis="y", linestyle="--", alpha=0.5)
+        ax_d.legend(loc="upper left", fontsize=8.5)
+    else:
+        ax_d.text(0.5, 0.5, "Recency collapse evaluation data pending", ha="center", va="center", transform=ax_d.transAxes, fontsize=10, color="gray")
+        ax_d.set_title("(d) Proof of Recency Collapse (Pending)", fontweight="bold")
     
     fig.suptitle("Master Empirical Overview: Federated Class-Incremental Learning on CIC-AndMal-2020", fontsize=16, fontweight="bold", y=1.01)
     plt.tight_layout()

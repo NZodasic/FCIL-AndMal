@@ -24,6 +24,9 @@ class ReplayHerdingMethod(BaseILMethod):
         self.use_herding = use_herding
         # Memory buffer: class_id -> (features_tensor, labels_tensor)
         self.buffer: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._device_buffer_x: Optional[torch.Tensor] = None
+        self._device_buffer_y: Optional[torch.Tensor] = None
+        self._cached_device: Optional[torch.device] = None
 
     def compute_loss(
         self,
@@ -36,17 +39,23 @@ class ReplayHerdingMethod(BaseILMethod):
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         # Mix current batch with replay buffer samples
         if self.buffer and task_id > 0:
-            replay_x_list, replay_y_list = [], []
-            for cls_id, (cls_x, cls_y) in self.buffer.items():
-                if len(cls_x) > 0:
-                    # Randomly sample from buffer
-                    idx = np.random.choice(len(cls_x), size=min(len(cls_x), max(1, x.size(0) // (len(self.buffer) * 2))), replace=False)
-                    replay_x_list.append(cls_x[idx])
-                    replay_y_list.append(cls_y[idx])
+            if self._device_buffer_x is None or self._cached_device != device:
+                all_bx = [cls_x for cls_x, _ in self.buffer.values() if len(cls_x) > 0]
+                all_by = [cls_y for _, cls_y in self.buffer.values() if len(cls_y) > 0]
+                if all_bx:
+                    self._device_buffer_x = torch.cat(all_bx, dim=0).to(device)
+                    self._device_buffer_y = torch.cat(all_by, dim=0).to(device)
+                    self._cached_device = device
+                else:
+                    self._device_buffer_x = None
+                    self._device_buffer_y = None
 
-            if replay_x_list:
-                rx = torch.cat(replay_x_list, dim=0).to(device)
-                ry = torch.cat(replay_y_list, dim=0).to(device)
+            if self._device_buffer_x is not None and len(self._device_buffer_x) > 0:
+                buf_len = len(self._device_buffer_x)
+                k_samples = min(buf_len, max(1, x.size(0) // 2))
+                idx = torch.randint(0, buf_len, (k_samples,), device=device)
+                rx = self._device_buffer_x[idx]
+                ry = self._device_buffer_y[idx]
                 combined_x = torch.cat([x, rx], dim=0)
                 combined_y = torch.cat([y, ry], dim=0)
             else:
@@ -131,6 +140,8 @@ class ReplayHerdingMethod(BaseILMethod):
 
             self.buffer[cls_id] = (selected_x, selected_y)
 
+        self._device_buffer_x = None
+        self._device_buffer_y = None
         model.train()
 
     def state_dict(self) -> Dict[str, Any]:
@@ -146,3 +157,5 @@ class ReplayHerdingMethod(BaseILMethod):
         self.buffer_size_per_class = state.get("buffer_size_per_class", self.buffer_size_per_class)
         raw_buf = state.get("buffer", {})
         self.buffer = {int(k): (v[0], v[1]) for k, v in raw_buf.items()}
+        self._device_buffer_x = None
+        self._device_buffer_y = None

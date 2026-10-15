@@ -18,6 +18,8 @@ def configure_mps_environment() -> None:
     if platform.system() == "Darwin":
         # Enable fallback to CPU for operations not natively implemented in MPS
         os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+        # Disable artificial low allocation watermark to allow full use of unified memory
+        os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
 
 
 def is_mps_available() -> bool:
@@ -31,6 +33,17 @@ def is_mps_available() -> bool:
 def is_cuda_available() -> bool:
     """Check if Nvidia CUDA is available."""
     return torch.cuda.is_available()
+
+
+def clear_device_cache() -> None:
+    """Clear accelerator cache for Nvidia CUDA or Apple Silicon MPS."""
+    if is_cuda_available():
+        torch.cuda.empty_cache()
+    if is_mps_available() and hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+        try:
+            torch.mps.empty_cache()
+        except Exception:
+            pass
 
 
 def resolve_device(device_name: Optional[Union[str, torch.device]] = None) -> torch.device:

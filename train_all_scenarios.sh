@@ -22,16 +22,24 @@ cd "$(dirname "$0")"
 TARGET_SCENARIO="${1:-dynamic}"
 DEVICE="${2:-auto}"
 OUTPUT_ROOT="${3:-./EXPERIMENT}"
-shift 3 2>/dev/null || true
-EXTRA_ARGS="$*"
+# Consume only positional arguments that were actually supplied.  A bare
+# `shift 3` fails when callers omit the optional output root; bash then leaves
+# every argument in "$@", causing the scenario and device to be forwarded to
+# run_all.py as invalid extra arguments.
+if (( $# >= 3 )); then
+    shift 3
+else
+    shift "$#"
+fi
+EXTRA_ARGS=("$@")
 
 echo "=============================================================================="
 echo "  FCIL-AndMal2020 Master Scenario Training Pipeline"
 echo "  Target Scenario : $TARGET_SCENARIO"
 echo "  Device          : $DEVICE"
 echo "  Output Root     : $OUTPUT_ROOT"
-if [ -n "$EXTRA_ARGS" ]; then
-echo "  Extra Flags     : $EXTRA_ARGS"
+if (( ${#EXTRA_ARGS[@]} )); then
+    echo "  Extra Flags     : ${EXTRA_ARGS[*]}"
 fi
 echo "=============================================================================="
 
@@ -49,7 +57,8 @@ run_scenario() {
         --mode all \
         --device "$DEVICE" \
         --output_root "$OUTPUT_ROOT" \
-        $EXTRA_ARGS
+        --allow_incomplete_benchmark \
+        "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
 }
 
 case "$TARGET_SCENARIO" in

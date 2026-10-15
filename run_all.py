@@ -126,6 +126,8 @@ def run_stage1(
     ]
     if not allow_incomplete_benchmark:
         cmd.append("--strict_class_coverage")
+    else:
+        cmd.append("--allow_classwise_alignment")
     info(f"Stage 1: {' '.join(cmd)}")
     if dry:
         return True
@@ -440,6 +442,40 @@ def main() -> None:
     prepared_dir  = Path(args.prepared_dir)
     partition_dir = Path(args.partition_dir)
     output_root   = Path(args.output_root)
+
+    # Auto-detect incomplete benchmark if dataset has missing classes (e.g. real CIC-AndMal dynamic lacking 'Benign')
+    if not args.allow_incomplete_benchmark:
+        cov_file = prepared_dir / "class_coverage.json"
+        prov_file = prepared_dir / "data_provenance.json"
+        if cov_file.is_file():
+            try:
+                with open(cov_file, "r") as f:
+                    cdata = json.load(f)
+                if cdata.get(args.feature_type, {}).get("missing_labels"):
+                    args.allow_incomplete_benchmark = True
+                    info(f"Auto-detected missing classes in prepared {args.feature_type} data ({cdata[args.feature_type]['missing_labels']}) -> enabling --allow_incomplete_benchmark")
+            except Exception:
+                pass
+        if not args.allow_incomplete_benchmark and prov_file.is_file():
+            try:
+                with open(prov_file, "r") as f:
+                    pdata = json.load(f)
+                if pdata.get("strict_class_coverage") is False:
+                    args.allow_incomplete_benchmark = True
+                    info("Auto-detected non-strict class coverage in data provenance -> enabling --allow_incomplete_benchmark")
+            except Exception:
+                pass
+        if not args.allow_incomplete_benchmark and args.feature_type in ["dynamic", "fused"]:
+            test_pq = prepared_dir / "dynamic" / "test.parquet"
+            if test_pq.is_file():
+                try:
+                    import pandas as pd
+                    d_test = pd.read_parquet(test_pq, columns=["label"])
+                    if "Benign" not in d_test["label"].values:
+                        args.allow_incomplete_benchmark = True
+                        info("Auto-detected real dynamic telemetry without 'Benign' -> enabling --allow_incomplete_benchmark")
+                except Exception:
+                    pass
 
     # ── Dataset readiness for requested client counts and feature_type ────
     ensure_dataset(

@@ -101,7 +101,26 @@ class TestModels(unittest.TestCase):
         loss.backward()
         self.assertIsNotNone(model.classifier.weight.grad)
 
+    def test_fused_real_dimensions_fcilnet(self):
+        """Verify Fused Multi-Modal FCILNet with real dataset dimensions (9503 static + 142 dynamic)."""
+        cfg = ModelConfig(
+            backbone_type="fused",
+            input_dim=9645,
+            static_input_dim=9503,
+            dynamic_input_dim=142,
+            latent_dim=64,
+        )
+        model = FCILNet(cfg)
+        model.train()
+        x = torch.randn(4, 9645)
+        logits = model(x)
+        self.assertEqual(logits.shape, (4, 3))
+        loss = logits.sum()
+        loss.backward()
+        self.assertIsNotNone(model.classifier.weight.grad)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

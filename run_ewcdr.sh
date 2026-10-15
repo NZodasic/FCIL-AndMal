@@ -60,7 +60,7 @@ python3 run_all.py \
     --only EWCDR \
     --clients "${CLIENTS_ARGS[@]}" \
     --device "${DEVICE}" \
-    "${EXTRA_ARGS[@]}"
+    "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
 
 echo -e "\n======================================================================"
 echo "  ✅ EWCDR experiments completed."

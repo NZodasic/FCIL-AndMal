@@ -102,9 +102,8 @@ def create_model(feature_type: str, initial_classes: int = 3, input_dim: int = N
         static_dim = 300
         dynamic_dim = 141
         if input_dim is not None:
-            # Approx split or standard defaults
-            static_dim = 300
-            dynamic_dim = input_dim - static_dim if input_dim > 300 else 141
+            static_dim = 9503 if input_dim > 9503 else (300 if input_dim <= 500 else input_dim - 141)
+            dynamic_dim = input_dim - static_dim
         return FusedModel(
             static_input_dim=static_dim,
             dynamic_input_dim=dynamic_dim,

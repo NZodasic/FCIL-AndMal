@@ -15,7 +15,7 @@ from federated.client import FLClient
 from federated.aggregators.base import BaseAggregator, FedAvg
 from federated.drift.controller import ServerDriftController
 from config import ID2LABEL
-from utils.device import resolve_device
+from utils.device import resolve_device, clear_device_cache
 from utils.metrics import format_classification_metrics, format_confusion_matrix
 
 
@@ -144,9 +144,9 @@ class FLServer:
         Returns:
             Updated global model.
         """
-        # Collect client models
-        client_models = [
-            copy.deepcopy(self.clients[cid].model)
+        # Collect client model state dictionaries (avoids allocating 50 model duplicates every round)
+        client_states = [
+            self.clients[cid].model.state_dict()
             for cid in client_ids
         ]
 
@@ -154,22 +154,20 @@ class FLServer:
         if isinstance(self.aggregator, FedAvg):
             self.global_model = self.aggregator.aggregate(
                 self.global_model,
-                client_models,
+                client_states,
                 client_weights
             )
         else:
             # For FedNova or other aggregators that need steps
             self.global_model = self.aggregator.aggregate(
                 self.global_model,
-                client_models,
+                client_states,
                 client_weights,
                 client_steps
             )
 
-        del client_models
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        del client_states
+        clear_device_cache()
 
         return self.global_model
 
@@ -415,8 +413,7 @@ class FLServer:
                     train_loader=train_loaders[cid]
                 )
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clear_device_cache()
 
         # Evaluation happens once, after the task's final communication round.
         final_evaluation = {}

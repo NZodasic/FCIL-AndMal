@@ -151,11 +151,14 @@ class FCILDataPartitioner:
 
                 parquet_path = os.path.join(task_dir, f"client_{cid:02d}.parquet")
                 csv_path = os.path.join(task_dir, f"client_{cid:02d}.csv")
+                parquet_saved = False
                 try:
                     client_df.to_parquet(parquet_path, index=False)
+                    parquet_saved = True
                 except Exception:
                     pass
-                client_df.to_csv(csv_path, index=False)
+                if not parquet_saved or len(client_df.columns) < 500:
+                    client_df.to_csv(csv_path, index=False)
 
         # 3. Export Partition Table & Metadata
         self._export_metadata(

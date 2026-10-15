@@ -26,6 +26,9 @@ class EWCMethod(BaseILMethod):
         self.ewc_lambda = ewc_lambda
         self.fisher_dict: Dict[str, torch.Tensor] = {}
         self.optimal_params: Dict[str, torch.Tensor] = {}
+        self._device_fisher: Dict[str, torch.Tensor] = {}
+        self._device_optimal: Dict[str, torch.Tensor] = {}
+        self._cached_device: Optional[torch.device] = None
 
     def compute_loss(
         self,
@@ -41,10 +44,15 @@ class EWCMethod(BaseILMethod):
 
         ewc_loss = torch.tensor(0.0, device=device)
         if task_id > 0 and self.fisher_dict:
+            if self._cached_device != device or not self._device_fisher:
+                self._device_fisher = {k: v.to(device) for k, v in self.fisher_dict.items()}
+                self._device_optimal = {k: v.to(device) for k, v in self.optimal_params.items()}
+                self._cached_device = device
+
             for name, param in model.named_parameters():
-                if name in self.fisher_dict and name in self.optimal_params:
-                    f = self.fisher_dict[name].to(device)
-                    p_star = self.optimal_params[name].to(device)
+                if name in self._device_fisher and name in self._device_optimal:
+                    f = self._device_fisher[name]
+                    p_star = self._device_optimal[name]
                     # Penalize each overlapping historical parameter element exactly
                     # once. Newly added classifier rows have no historical Fisher and
                     # therefore remain unregularized until the current task completes.
@@ -72,7 +80,8 @@ class EWCMethod(BaseILMethod):
         task_id: int,
         model: FCILNet,
         train_loader: Optional[DataLoader] = None,
-        device: torch.device = torch.device("cpu")
+        device: torch.device = torch.device("cpu"),
+        max_samples: int = 1000,
     ) -> None:
         """
         Estimate empirical Fisher Information Matrix across the current task's dataset.
@@ -85,13 +94,15 @@ class EWCMethod(BaseILMethod):
         total_samples = 0
 
         for bx, by in train_loader:
+            if total_samples >= max_samples:
+                break
             bx, by = bx.to(device), by.to(device)
             logits = model(bx, limit_to_current=True)
             log_probs = F.log_softmax(logits, dim=1)
             # Empirical Fisher: accumulate the squared gradient for each
             # sampled predictive label independently, rather than squaring a
             # gradient sum across the whole minibatch.
-            n_samples = bx.size(0)
+            n_samples = min(bx.size(0), max_samples - total_samples)
             total_samples += n_samples
 
             for i in range(n_samples):
@@ -103,6 +114,10 @@ class EWCMethod(BaseILMethod):
                     if param.grad is not None:
                         fisher_accum[name] += param.grad.detach().pow(2)
             model.zero_grad()
+
+        # Invalidate device cache
+        self._device_fisher.clear()
+        self._device_optimal.clear()
 
         # Normalize Fisher
         if total_samples > 0:
