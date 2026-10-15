@@ -28,6 +28,7 @@ from training.checkpoint import CheckpointManager
 from utils.logger import AcademicLogger
 from utils.results import export_experiment_results, resolve_test_location
 from utils.metrics import compute_fscil_session_metrics
+from utils.device import clear_device_cache
 
 
 class CentralizedTrainer:
@@ -308,8 +309,7 @@ class CentralizedTrainer:
 
             import gc
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clear_device_cache()
 
             workbook_path = export_experiment_results(
                 workbook_path=os.path.join(self.config.output_root, "evaluation_results.xlsx"),

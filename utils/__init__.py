@@ -1,7 +1,7 @@
 """Utilities package."""
 
 from utils.checkpoint import CheckpointManager
-from utils.device import resolve_device, get_device_info, is_mps_available, is_cuda_available
+from utils.device import resolve_device, get_device_info, is_mps_available, is_cuda_available, clear_device_cache
 from utils.logging import ExperimentLogger, get_logger
 from utils.metrics import (
     ContinualEvaluationMatrix,
@@ -20,5 +20,6 @@ __all__ = [
     'get_device_info',
     'is_mps_available',
     'is_cuda_available',
+    'clear_device_cache',
 ]
 

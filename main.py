@@ -38,6 +38,7 @@ from config import (
 )
 from utils.seed import set_seed
 from utils.logger import AcademicLogger, get_logger
+from utils.device import clear_device_cache
 from data.synthetic_generator import generate_synthetic_raw_andmal2020
 from data.prepare_dataset import AndMal2020DataPreparer
 from data.partition import FCILDataPartitioner
@@ -413,6 +414,43 @@ def main():
         exp_cfg.model.dynamic_input_dim = exp_cfg.model.input_dim
     elif args.feature_type == "static":
         exp_cfg.model.static_input_dim = exp_cfg.model.input_dim
+    elif args.feature_type == "fused":
+        fused_schema_file = os.path.join(exp_cfg.scenario.prepared_data_dir, "fused", "feature_schema.json")
+        static_meta_file = os.path.join(exp_cfg.scenario.prepared_data_dir, "static", "scaler_metadata.json")
+        stat_dim = None
+        if os.path.isfile(fused_schema_file):
+            try:
+                with open(fused_schema_file, "r", encoding="utf-8") as f:
+                    schema_data = json.load(f)
+                if "static_dim" in schema_data:
+                    stat_dim = int(schema_data["static_dim"])
+            except Exception:
+                pass
+        if stat_dim is None and os.path.isfile(static_meta_file):
+            try:
+                with open(static_meta_file, "r", encoding="utf-8") as f:
+                    stat_cols = json.load(f).get("feature_columns", [])
+                if stat_cols:
+                    stat_dim = len(stat_cols)
+            except Exception:
+                pass
+        if stat_dim is None:
+            fused_meta_file = os.path.join(exp_cfg.scenario.prepared_data_dir, "fused", "scaler_metadata.json")
+            if os.path.isfile(fused_meta_file):
+                try:
+                    with open(fused_meta_file, "r", encoding="utf-8") as f:
+                        fused_cols = json.load(f).get("feature_columns", [])
+                    stat_dim = len([c for c in fused_cols if c.startswith("static_feat_")])
+                except Exception:
+                    pass
+        if stat_dim is None or stat_dim <= 0 or stat_dim >= exp_cfg.model.input_dim:
+            stat_dim = 9503 if exp_cfg.model.input_dim > 9503 else exp_cfg.model.static_input_dim
+        exp_cfg.model.static_input_dim = stat_dim
+        exp_cfg.model.dynamic_input_dim = exp_cfg.model.input_dim - stat_dim
+        logger.info(
+            f"Fused model feature partition: static_dim={exp_cfg.model.static_input_dim}, "
+            f"dynamic_dim={exp_cfg.model.dynamic_input_dim} (total={exp_cfg.model.input_dim})"
+        )
     exp_cfg.save_json(config_json_path)
     logger.info(
         f"Held-out test set loaded: {len(test_y):,} samples, "
@@ -585,9 +623,7 @@ def main():
 
             train_loaders.clear()
             del train_loaders
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clear_device_cache()
 
         final_results = {
             "all_task_results": all_task_results,

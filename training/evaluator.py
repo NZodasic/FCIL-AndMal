@@ -26,7 +26,7 @@ class ContinualEvaluator:
         self,
         test_X: np.ndarray,
         test_y: np.ndarray,
-        batch_size: int = 512,
+        batch_size: int = 1024,
         device: Any = "auto",
     ):
         self.test_X = test_X
@@ -88,12 +88,16 @@ class ContinualEvaluator:
             for bx, by in loader:
                 bx = bx.to(self.device)
                 logits = model(bx, limit_to_current=True)
-                preds = torch.argmax(logits, dim=1).cpu().numpy()
-                all_preds.extend(preds)
-                all_targets.extend(by.numpy())
+                preds = torch.argmax(logits, dim=1)
+                all_preds.append(preds.cpu())
+                all_targets.append(by)
 
-        all_preds_arr = np.array(all_preds)
-        all_targets_arr = np.array(all_targets)
+        if all_preds:
+            all_preds_arr = torch.cat(all_preds).numpy()
+            all_targets_arr = torch.cat(all_targets).numpy()
+        else:
+            all_preds_arr = np.array([], dtype=np.int64)
+            all_targets_arr = np.array([], dtype=np.int64)
 
         # 1. Global Metrics across all seen classes
         global_metrics = compute_classification_metrics(
@@ -166,18 +170,24 @@ class Evaluator:
             for data, targets in test_loader:
                 data = data.to(self.device)
                 outputs = self.model(data)
-                predictions = outputs.argmax(dim=1).cpu().numpy()
-                targets = targets.cpu().numpy()
-                all_predictions.extend(predictions.tolist())
-                all_targets.extend(targets.tolist())
+                predictions = outputs.argmax(dim=1)
+                all_predictions.append(predictions.cpu())
+                all_targets.append(targets)
+
+        if all_predictions:
+            all_pred_arr = torch.cat(all_predictions).numpy()
+            all_target_arr = torch.cat(all_targets).numpy()
+        else:
+            all_pred_arr = np.array([], dtype=np.int64)
+            all_target_arr = np.array([], dtype=np.int64)
 
         current_task = task_id if task_id is not None else 4
         seen_classes = []
         for seen_task in range(current_task + 1):
             seen_classes.extend(LABEL2ID[label] for label in TASK_LABEL_MAP[seen_task])
         return compute_classification_metrics(
-            np.asarray(all_targets),
-            np.asarray(all_predictions),
+            all_target_arr,
+            all_pred_arr,
             seen_classes,
             ID2LABEL,
         )

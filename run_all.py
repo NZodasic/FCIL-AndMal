@@ -126,6 +126,8 @@ def run_stage1(
     ]
     if not allow_incomplete_benchmark:
         cmd.append("--strict_class_coverage")
+    else:
+        cmd.append("--allow_classwise_alignment")
     info(f"Stage 1: {' '.join(cmd)}")
     if dry:
         return True
