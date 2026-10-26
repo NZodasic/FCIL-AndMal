@@ -142,13 +142,22 @@ class CentralizedTrainer:
                     f"--feature_type {self.config.scenario.feature_type} --n_clients {self.config.scenario.n_clients} --output_dir {self.config.scenario.partition_output_dir}"
                 )
 
-            drop_last = len(ds) > self.config.fl.batch_size and (len(ds) % self.config.fl.batch_size == 1)
-            train_loader = DataLoader(
-                ds,
-                batch_size=self.config.fl.batch_size,
-                shuffle=True,
-                drop_last=drop_last,
-            )
+            if self.config.il.method_name == "falcon":
+                from data.sampler import BalancedBatchSampler
+                sampler = BalancedBatchSampler(
+                    labels=curr_y,
+                    batch_size=self.config.fl.batch_size,
+                    seed=self.config.seed + task_id,
+                )
+                train_loader = DataLoader(ds, batch_sampler=sampler)
+            else:
+                drop_last = len(ds) > self.config.fl.batch_size and (len(ds) % self.config.fl.batch_size == 1)
+                train_loader = DataLoader(
+                    ds,
+                    batch_size=self.config.fl.batch_size,
+                    shuffle=True,
+                    drop_last=drop_last,
+                )
             optimization_loaders = [train_loader]
             if (
                 self.config.il.method_name == "malfscil"
@@ -219,6 +228,8 @@ class CentralizedTrainer:
                     and not is_final_epoch
                     and self.validation_evaluator is not None
                 ):
+                    if task_id > 0 and hasattr(self.il_method, "align_classifier_weights"):
+                        self.il_method.align_classifier_weights(self.model, task_id)
                     # Interim monitoring uses validation data only. The held-out
                     # test split is reserved for one evaluation after each task.
                     interim_metrics = self.validation_evaluator.evaluate_all_seen_tasks(

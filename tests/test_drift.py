@@ -540,5 +540,84 @@ class TestPaperFidelity(unittest.TestCase):
             "calibrate_theta_base() must be idempotent — only first call takes effect.")
 
 
+class TestFLCLIDS(unittest.TestCase):
+    """Unit tests for FL-CL-IDS (Khreasat & Villarrubia Gonzalez, IEEE Access 2026):
+    - Page-Hinkley covariate drift detector (Eqs. 10-12)
+    - Adaptive Lambda Controller (Eq. 5)
+    - Drift-triggered round-skip protocol with minimum-participation floor rho_min=0.5 (Algorithm 1)
+    - Online Fisher consolidation with decay gamma=0.9 (Eq. 14)
+    """
+
+    def test_page_hinkley_feature_covariate_drift(self):
+        from federated.drift.detectors import PageHinkleyDetector
+
+        ph = PageHinkleyDetector(delta=0.005, lambda_ph=50.0, tau_low=0.05, tau_high=0.30)
+        rng = np.random.default_rng(42)
+
+        # Reference stationary distribution N(0, 1) across d=100 features
+        X_ref = rng.normal(0.0, 1.0, size=(64, 100))
+        score0, drift0, warn0 = ph.update_features(X_ref)
+        self.assertEqual(score0, 0.0)
+        self.assertFalse(drift0)
+
+        # Second stationary batch from same distribution -> low drift score (< tau_low)
+        X_stat = rng.normal(0.0, 1.0, size=(64, 100))
+        score_stat, drift_stat, _ = ph.update_features(X_stat)
+        self.assertLess(score_stat, 0.15)
+        self.assertFalse(drift_stat)
+
+        # Covariate shift on 50% of features (mean shift +3.0) -> drift_fraction > tau_high (0.30)
+        X_shift = rng.normal(0.0, 1.0, size=(64, 100))
+        X_shift[:, :50] += 3.0
+        score_shift, drift_shift, warn_shift = ph.update_features(X_shift)
+        self.assertGreater(score_shift, 0.30)
+        self.assertTrue(drift_shift)
+        self.assertTrue(warn_shift)
+
+    def test_adaptive_lambda_controller_equation_5(self):
+        from federated.drift.controller import AdaptiveLambdaController
+
+        ctrl = AdaptiveLambdaController(
+            lambda_min=10.0,
+            lambda_max=1000.0,
+            tau_low=0.05,
+            tau_high=0.30,
+            rho_min=0.50,
+            min_active_rounds_per_task=5,
+        )
+        # Delta < tau_low -> lambda_max
+        self.assertAlmostEqual(ctrl.compute_lambda(0.01), 1000.0)
+        # Delta > tau_high -> lambda_min
+        self.assertAlmostEqual(ctrl.compute_lambda(0.45), 10.0)
+        # Midpoint Delta = 0.175 -> midpoint lambda = 505.0
+        self.assertAlmostEqual(ctrl.compute_lambda(0.175), 505.0, places=4)
+
+    def test_round_skip_with_minimum_participation_floor(self):
+        from federated.drift.controller import AdaptiveLambdaController
+
+        ctrl = AdaptiveLambdaController(
+            lambda_min=10.0,
+            lambda_max=1000.0,
+            tau_low=0.05,
+            tau_high=0.30,
+            rho_min=0.50,
+            min_active_rounds_per_task=5,
+        )
+        # 6 scheduled clients; 5 have stationary drift < 0.05, only 1 has drift >= 0.05
+        scores = {0: 0.20, 1: 0.04, 2: 0.03, 3: 0.02, 4: 0.01, 5: 0.00}
+        active, skipped, lambdas, info = ctrl.plan_round(
+            client_drift_scores=scores,
+            round_in_task=10,
+            task_id=1,
+        )
+        # Minimum participation floor ceil(0.5 * 6) = 3 must recall 2 clients (1 and 2)
+        self.assertEqual(len(active), 3)
+        self.assertEqual(len(skipped), 3)
+        self.assertIn(0, active)
+        self.assertIn(1, active)
+        self.assertIn(2, active)
+        self.assertEqual(info["n_recalled"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

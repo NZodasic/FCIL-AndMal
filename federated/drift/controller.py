@@ -12,7 +12,157 @@ Reference:
 """
 
 from typing import Dict, List, Tuple, Optional, Any
+import math
 import numpy as np
+
+
+class AdaptiveLambdaController:
+    """FL-CL-IDS Per-Client Adaptive Lambda & Drift-Triggered Round-Skip Controller.
+
+    Implements Section III-C, Equation (5), and Algorithm 1 of:
+        Khreasat & Villarrubia Gonzalez, "Drift-Aware Federated Continual Learning
+        for Privacy-Preserving Android Malware Intrusion Detection", IEEE Access, 2026.
+
+    1. Adaptive EWC regularization strength (Eq. 5):
+        - Delta_i^{(t)} < tau_low               => lambda_i^{(t)} = lambda_max
+        - tau_low <= Delta_i^{(t)} <= tau_high  => linear interpolation in [lambda_min, lambda_max]
+        - Delta_i^{(t)} > tau_high              => lambda_i^{(t)} = lambda_min
+    2. Drift-triggered round-skip protocol with minimum-participation floor (Algorithm 1):
+        - Clients with Delta_i^{(t)} < tau_low (after initial task adaptation rounds)
+          flag SKIP and omit redundant local training and model upload.
+        - If fewer than ceil(rho_min * |S^{(r)}|) clients upload, the server recalls
+          skipped clients with the highest Delta_j^{(t)} until the floor is met.
+    """
+
+    def __init__(
+        self,
+        lambda_min: float = 10.0,
+        lambda_max: float = 1000.0,
+        tau_low: float = 0.05,
+        tau_high: float = 0.30,
+        rho_min: float = 0.50,
+        min_active_rounds_per_task: int = 10,
+    ):
+        self.lambda_min = float(lambda_min)
+        self.lambda_max = float(lambda_max)
+        self.tau_low = float(tau_low)
+        self.tau_high = float(tau_high)
+        self.rho_min = float(rho_min)
+        self.min_active_rounds_per_task = int(min_active_rounds_per_task)
+
+        # Cumulative communication accounting across tasks/rounds
+        self.total_scheduled_uploads: int = 0
+        self.total_actual_uploads: int = 0
+        self.total_skipped_uploads: int = 0
+        self.total_recalled_uploads: int = 0
+        self.client_lambdas: Dict[int, float] = {}
+        self.client_drift_scores: Dict[int, float] = {}
+
+    def reset(self) -> None:
+        self.total_scheduled_uploads = 0
+        self.total_actual_uploads = 0
+        self.total_skipped_uploads = 0
+        self.total_recalled_uploads = 0
+        self.client_lambdas.clear()
+        self.client_drift_scores.clear()
+
+    def compute_lambda(self, drift_score: float) -> float:
+        """Compute per-client EWC regularization multiplier lambda_i^{(t)} via Eq. (5)."""
+        delta = float(np.clip(drift_score, 0.0, 1.0))
+        if delta < self.tau_low:
+            return self.lambda_max
+        if delta > self.tau_high:
+            return self.lambda_min
+        denom = max(1e-9, self.tau_high - self.tau_low)
+        frac = (delta - self.tau_low) / denom
+        return float(self.lambda_max - frac * (self.lambda_max - self.lambda_min))
+
+    def plan_round(
+        self,
+        client_drift_scores: Dict[int, float],
+        round_in_task: int = 1,
+        task_id: int = 0,
+    ) -> Tuple[List[int], List[int], Dict[int, float], Dict[str, Any]]:
+        """Execute Algorithm 1 round-skip and minimum-participation floor check.
+
+        Args:
+            client_drift_scores: Mapping of client_id -> Delta_i^{(t)} in [0, 1].
+            round_in_task: 1-based communication round index within the current task.
+            task_id: Current incremental task index (0-based).
+
+        Returns:
+            Tuple of:
+                - active_client_ids: Clients that perform local training and upload.
+                - skipped_client_ids: Clients that skip training and upload this round.
+                - lambdas: Mapping of client_id -> adaptive lambda_i^{(t)}.
+                - info: Diagnostic dictionary (upload reduction, recalled clients, etc.).
+        """
+        scheduled_ids = sorted(list(client_drift_scores.keys()))
+        n_scheduled = len(scheduled_ids)
+        if n_scheduled == 0:
+            return [], [], {}, {}
+
+        lambdas: Dict[int, float] = {}
+        active_set: List[int] = []
+        skipped_candidates: List[int] = []
+
+        # Allow initial rounds of each task for new-class representation acquisition
+        allow_skip = (round_in_task > self.min_active_rounds_per_task)
+
+        for cid in scheduled_ids:
+            delta_i = float(client_drift_scores[cid])
+            lam_i = self.compute_lambda(delta_i)
+            lambdas[cid] = lam_i
+            self.client_lambdas[cid] = lam_i
+            self.client_drift_scores[cid] = delta_i
+
+            if allow_skip and delta_i < self.tau_low:
+                skipped_candidates.append(cid)
+            else:
+                active_set.append(cid)
+
+        # Algorithm 1 (lines 17-21): Enforce minimum participation floor rho_min
+        min_required = int(math.ceil(self.rho_min * float(n_scheduled)))
+        recalled_clients: List[int] = []
+        if len(active_set) < min_required and skipped_candidates:
+            needed = min_required - len(active_set)
+            # Recall skipped clients with largest Delta_j^{(t)} first ( tie-broken by cyclic round offset )
+            sorted_skipped = sorted(
+                skipped_candidates,
+                key=lambda c: (client_drift_scores[c], (c + round_in_task) % max(1, n_scheduled)),
+                reverse=True,
+            )
+            recalled_clients = sorted_skipped[:needed]
+            active_set.extend(recalled_clients)
+            skipped_candidates = sorted_skipped[needed:]
+
+        active_client_ids = sorted(active_set)
+        skipped_client_ids = sorted(skipped_candidates)
+
+        self.total_scheduled_uploads += n_scheduled
+        self.total_actual_uploads += len(active_client_ids)
+        self.total_skipped_uploads += len(skipped_client_ids)
+        self.total_recalled_uploads += len(recalled_clients)
+
+        upload_reduction_pct = (
+            100.0 * float(self.total_skipped_uploads) / float(max(1, self.total_scheduled_uploads))
+        )
+
+        info = {
+            "task_id": int(task_id),
+            "round_in_task": int(round_in_task),
+            "n_scheduled": n_scheduled,
+            "n_active_uploads": len(active_client_ids),
+            "n_skipped_uploads": len(skipped_client_ids),
+            "n_recalled": len(recalled_clients),
+            "active_clients": active_client_ids,
+            "skipped_clients": skipped_client_ids,
+            "recalled_clients": recalled_clients,
+            "mean_drift_score": float(np.mean(list(client_drift_scores.values()))),
+            "mean_lambda": float(np.mean(list(lambdas.values()))),
+            "cumulative_upload_reduction_pct": float(upload_reduction_pct),
+        }
+        return active_client_ids, skipped_client_ids, lambdas, info
 
 
 class ServerDriftController:

@@ -353,6 +353,115 @@ class FusedMultiModalBackbone(nn.Module):
             return self.fusion_fc(fused)
 
 
+# ==============================================================================
+# FALCON PROPOSED BACKBONE: CNN-BiLSTM-ATTENTION ARCHITECTURE
+# ==============================================================================
+class CNNBiLSTMAttentionBackbone(nn.Module):
+    """
+    Falcon CNN-BiLSTM-Attention Backbone for Traffic and Malware Representation.
+    
+    Architecture (Yang et al., IEEE TCE 2026, Section III-B & IV-A-2):
+    1. 1D-CNN Stage:
+       - 1D convolutional layer with 64 channels, kernel size 3, padding 1, ReLU.
+       - Extracts fine-grained local patterns and short-term correlations.
+    2. Bidirectional LSTM Stage:
+       - 2-layer BiLSTM with hidden size 64 per direction (output dimension 128 = 2 * 64),
+         dropout 0.2, batch_first=True.
+       - Captures bidirectional long-range temporal dependencies.
+    3. Self-Attention Stage:
+       - Trainable projection matrices W_q, W_k, W_v with projection dimension d_k = 64.
+       - Scaled dot-product attention: s_{t,j} = (q_t^T k_j) / sqrt(d_k).
+       - Softmax normalization across sequence length.
+       - Aggregated representation: z_t = sum_j alpha_{t,j} v_j.
+       - Global sequence pooling: z = mean_t(z_t).
+    4. Projection Head:
+       - Projects to target latent_dim (default: 128) with BatchNorm1d and ReLU.
+    """
+
+    def __init__(
+        self,
+        input_dim: int = 141,
+        conv_channels: int = 64,
+        kernel_size: int = 3,
+        lstm_hidden: int = 64,
+        lstm_layers: int = 2,
+        attn_dim: int = 64,
+        latent_dim: int = 128,
+        dropout: float = 0.2,
+    ):
+        super().__init__()
+        import math
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+        self.attn_dim = attn_dim
+        self.scale = 1.0 / math.sqrt(attn_dim)
+
+        # 1. 1D-CNN Stage
+        self.conv = nn.Conv1d(
+            in_channels=1,
+            out_channels=conv_channels,
+            kernel_size=kernel_size,
+            padding=kernel_size // 2,
+        )
+        self.bn = nn.BatchNorm1d(conv_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv_drop = nn.Dropout(p=dropout)
+
+        # 2. 2-layer BiLSTM Stage
+        self.lstm = nn.LSTM(
+            input_size=conv_channels,
+            hidden_size=lstm_hidden,
+            num_layers=lstm_layers,
+            bidirectional=True,
+            batch_first=True,
+            dropout=dropout if lstm_layers > 1 else 0.0,
+        )
+        bilstm_out_dim = lstm_hidden * 2  # 128
+
+        # 3. Self-Attention projections (Eqs. 13-16)
+        self.w_q = nn.Linear(bilstm_out_dim, attn_dim)
+        self.w_k = nn.Linear(bilstm_out_dim, attn_dim)
+        self.w_v = nn.Linear(bilstm_out_dim, attn_dim)
+
+        # 4. Latent projection
+        self.proj = nn.Sequential(
+            nn.Linear(attn_dim, latent_dim),
+            nn.BatchNorm1d(latent_dim),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        with SafeBatchNormContext(self, x.size(0)):
+            if x.dim() == 2:
+                x_seq = x.unsqueeze(1)
+            elif x.dim() == 3:
+                x_seq = x
+            else:
+                raise ValueError(f"Expected 2D or 3D input, got {x.shape}")
+
+            # 1. 1D-CNN along sequence dimension
+            c = self.conv_drop(self.relu(self.bn(self.conv(x_seq))))
+
+            # 2. BiLSTM
+            c_transposed = c.permute(0, 2, 1)  # (B, L, C)
+            h, _ = self.lstm(c_transposed)     # (B, L, 2*H)
+
+            # 3. Self-Attention
+            q = self.w_q(h)  # (B, L, d_k)
+            k = self.w_k(h)  # (B, L, d_k)
+            v = self.w_v(h)  # (B, L, d_k)
+
+            scores = torch.bmm(q, k.transpose(1, 2)) * self.scale
+            attn_weights = F.softmax(scores, dim=-1)
+            z_t = torch.bmm(attn_weights, v)
+
+            # Global temporal pooling
+            z = z_t.mean(dim=1)  # (B, d_k)
+
+            # 4. Latent projection
+            return self.proj(z)
+
+
 def build_backbone(
     backbone_type: str,
     input_dim: int,
@@ -362,11 +471,14 @@ def build_backbone(
     dropout: float = 0.2
 ) -> nn.Module:
     """
-    Factory builder for neural backbones supporting Hybrid TCN+CNN and ablation models.
+    Factory builder for neural backbones supporting Hybrid TCN+CNN, Falcon CNN-BiLSTM-Attention,
+    and ablation models.
     """
     b_type = backbone_type.lower()
     if b_type in ["hybrid_tcn_cnn", "cnn_tcn", "tcn_cnn", "hybrid"]:
         return HybridTCNCNNBackbone(input_dim=input_dim, latent_dim=latent_dim, dropout=dropout)
+    elif b_type in ["cnn_bilstm_attention", "falcon", "falcon_backbone", "cnn_bilstm_attn"]:
+        return CNNBiLSTMAttentionBackbone(input_dim=input_dim, latent_dim=latent_dim, dropout=dropout)
     elif b_type in ["cnn1d", "cnn"]:
         return CNN1DBackbone(input_dim=input_dim, latent_dim=latent_dim, dropout=dropout)
     elif b_type == "tcn":
@@ -376,4 +488,8 @@ def build_backbone(
     elif b_type == "fused":
         return FusedMultiModalBackbone(static_dim=static_dim, dynamic_dim=dynamic_dim, latent_dim=latent_dim, dropout=dropout)
     else:
-        raise ValueError(f"Unknown backbone type: {backbone_type}. Choose from ['hybrid_tcn_cnn', 'cnn1d', 'tcn', 'mlp', 'fused']")
+        raise ValueError(
+            f"Unknown backbone type: {backbone_type}. "
+            "Choose from ['hybrid_tcn_cnn', 'cnn_bilstm_attention', 'falcon', 'cnn1d', 'tcn', 'mlp', 'fused']"
+        )
+

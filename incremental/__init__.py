@@ -8,6 +8,7 @@ from incremental.lwf import LwF
 from incremental.replay import Replay
 from incremental.spcil import SPCIL
 from incremental.malfsil import MALFSIL
+from incremental.falcon import Falcon
 
 __all__ = [
     'IncrementalStrategy',
@@ -18,4 +19,5 @@ __all__ = [
     'Replay',
     'SPCIL',
     'MALFSIL',
+    'Falcon',
 ]

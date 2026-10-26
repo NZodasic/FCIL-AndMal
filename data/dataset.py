@@ -102,6 +102,21 @@ class FLTaskDataset:
         safe_drop_last = drop_last or (len(ds) > actual_batch_size and len(ds) % actual_batch_size == 1)
         return DataLoader(ds, batch_size=actual_batch_size, shuffle=shuffle, drop_last=safe_drop_last)
 
+    def as_balanced_dataloader(
+        self,
+        batch_size: int = 256,
+        seed: Optional[int] = None,
+    ) -> DataLoader:
+        """Construct class-balanced PyTorch DataLoader using BalancedBatchSampler."""
+        from data.sampler import BalancedBatchSampler
+        X, y = self.as_numpy()
+        if len(y) == 0:
+            return DataLoader(TabularMalwareDataset(np.zeros((0, 1)), np.zeros(0)), batch_size=batch_size)
+        ds = TabularMalwareDataset(X, y)
+        sampler = BalancedBatchSampler(labels=y, batch_size=batch_size, seed=seed)
+        return DataLoader(ds, batch_sampler=sampler)
+
+
 
 def get_participating_clients(scenario_dir: str, task_id: int) -> List[int]:
     """

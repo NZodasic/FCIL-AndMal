@@ -67,7 +67,7 @@ class FedAvg(BaseAggregator):
 
 
 class FedNova(BaseAggregator):
-    """FedNova: Normalized averaging with momentum correction."""
+    """FedNova: Normalized averaging with heterogeneous local step correction (Wang et al., NeurIPS 2020)."""
 
     def __init__(self, tau: float = 1.0):
         self.tau = tau
@@ -90,27 +90,37 @@ class FedNova(BaseAggregator):
         if client_weights is None:
             client_weights = [1.0 / n_clients] * n_clients
 
+        total_w = sum(client_weights)
+        if total_w <= 0:
+            p_weights = [1.0 / n_clients] * n_clients
+        else:
+            p_weights = [float(w) / float(total_w) for w in client_weights]
+
         if client_steps is None:
-            client_steps = [1] * n_clients
+            steps_list = [1.0] * n_clients
+        else:
+            steps_list = [ float(max(1, s)) for s in client_steps ]
 
-        total_steps = sum(client_steps)
-        if total_steps == 0:
-            total_steps = 1
-        normalized_steps = [steps / total_steps * n_clients for steps in client_steps]
-
-        effective_weights = [w * norm_step for w, norm_step in zip(client_weights, normalized_steps)]
-        total_weight = sum(effective_weights)
-        if total_weight == 0:
-            total_weight = 1.0
-        effective_weights = [w / total_weight for w in effective_weights]
+        # Effective step count tau_eff = sum_k p_k * tau_k (Eq. 8)
+        tau_eff = sum(p * s for p, s in zip(p_weights, steps_list))
+        # Normalized update coefficient a_k = p_k * (tau_eff / tau_k)
+        raw_coeffs = [p * (tau_eff / max(1.0, s)) for p, s in zip(p_weights, steps_list)]
+        coeff_sum = sum(raw_coeffs)
+        if coeff_sum <= 0:
+            norm_coeffs = p_weights
+        else:
+            norm_coeffs = [c / coeff_sum for c in raw_coeffs]
 
         aggregated_state = {}
-        for key in global_state.keys():
-            aggregated = sum(
-                client_states[i][key] * effective_weights[i]
-                for i in range(n_clients)
-            )
-            aggregated_state[key] = aggregated
+        for key, g_val in global_state.items():
+            if g_val.dtype.is_floating_point:
+                delta_sum = sum(
+                    (client_states[i][key].to(g_val.device) - g_val) * norm_coeffs[i]
+                    for i in range(n_clients)
+                )
+                aggregated_state[key] = g_val + delta_sum
+            else:
+                aggregated_state[key] = client_states[0][key].to(g_val.device).clone()
 
         if is_dict:
             return aggregated_state

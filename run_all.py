@@ -63,7 +63,7 @@ def info(text: str) -> None: print(f"  {CYN}→{RST}  {text}")
 # Each entry: (case_name, mode, method, aggregator_or_None, extra_kwargs)
 CENTRALIZED_EXPERIMENTS: List[Tuple] = [
     ("Centralized_FineTune", "centralized", "finetune", None,      {}),
-    ("Centralized_EWCDR",    "centralized", "ewc",      None,      {"ewc_lambda": 5000.0}),
+    ("Centralized_EWCDR",    "centralized", "ewc",      None,      {"ewc_lambda": 500.0}),
     ("Centralized_MES",      "centralized", "replay",   None,      {"buffer_size": 20}),
     ("Centralized_SPCIL",    "centralized", "spcil",    None,      {}),
     ("Centralized_MALFSIL",  "centralized", "malfsil",  None,      {}),
@@ -72,7 +72,7 @@ CENTRALIZED_EXPERIMENTS: List[Tuple] = [
 FEDERATED_EXPERIMENTS: List[Tuple] = [
     ("FL_FedAvg",           "federated",   "finetune", "fedavg",  {}),
     ("FL_FedNova",          "federated",   "finetune", "fednova", {}),
-    ("FL_EWCDR",            "federated",   "ewc",      "fedavg",  {"ewc_lambda": 5000.0}),
+    ("FL_EWCDR",            "federated",   "ewc",      "fedavg",  {"ewc_lambda": 500.0, "enable_drift": True, "drift_detector": "page_hinkley"}),
     ("FL_MES",              "federated",   "replay",   "fedavg",  {"buffer_size": 20}),
     ("FL_SPCIL",            "federated",   "spcil",    "fedavg",  {}),
     ("FL_MALFSIL",          "federated",   "malfsil",  "fedavg",  {}),
@@ -266,7 +266,11 @@ def build_cmd(
             "--local_epochs", str(FL_LOCAL_EPOCHS),
         ]
     for k, v in extra.items():
-        cmd += [f"--{k}", str(v)]
+        if isinstance(v, bool):
+            if v:
+                cmd.append(f"--{k}")
+        else:
+            cmd += [f"--{k}", str(v)]
     return cmd
 
 

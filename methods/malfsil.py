@@ -72,7 +72,45 @@ class MALFSILMethod(BaseILMethod):
         if task_id > 0:
             self.prev_model = model.clone_model().to(device)
             self.prev_model.eval()
-            self.prev_num_classes = self.prev_model.current_classes
+            for p in self.prev_model.parameters():
+                p.requires_grad = False
+            cpt = (
+                getattr(model.config, "classes_per_task", 3)
+                if hasattr(model, "config") and model.config is not None
+                else 3
+            )
+            # Only distill historical classes [0 : task_id * cpt], never newly expanded random rows
+            self.prev_num_classes = min(self.prev_model.current_classes, task_id * cpt)
+        else:
+            self.prev_model = None
+            self.prev_num_classes = 0
+
+    def align_classifier_weights(self, model: FCILNet, task_id: int) -> None:
+        """Apply Weight Alignment (WA) on classifier head to prevent recency norm inflation."""
+        if task_id <= 0 or not hasattr(model, "classifier"):
+            return
+        fc = getattr(model.classifier, "fc", model.classifier)
+        if not hasattr(fc, "weight"):
+            return
+        cpt = (
+            getattr(model.config, "classes_per_task", 3)
+            if hasattr(model, "config") and model.config is not None
+            else 3
+        )
+        prev_cls = task_id * cpt
+        curr_cls = min(model.current_classes, (task_id + 1) * cpt)
+        if curr_cls <= prev_cls:
+            return
+
+        with torch.no_grad():
+            w = fc.weight.data
+            old_norms = torch.norm(w[:prev_cls], p=2, dim=1)
+            new_norms = torch.norm(w[prev_cls:curr_cls], p=2, dim=1)
+            mean_old = float(old_norms.mean().item())
+            mean_new = float(new_norms.mean().item())
+            if mean_old > 1e-6 and mean_new > mean_old:
+                gamma_wa = mean_old / mean_new
+                w[prev_cls:curr_cls].mul_(gamma_wa)
 
     def compute_loss(
         self,
@@ -83,7 +121,7 @@ class MALFSILMethod(BaseILMethod):
         task_id: int,
         device: torch.device = torch.device("cpu")
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        # 1. Exemplar Replay Augmentation
+        # 1. Class-Balanced Exemplar Replay Augmentation
         if self.buffer and task_id > 0:
             if self._device_buffer_x is None or self._cached_device != device:
                 all_bx = [cls_x for cls_x, _ in self.buffer.values() if len(cls_x) > 0]
@@ -98,7 +136,8 @@ class MALFSILMethod(BaseILMethod):
 
             if self._device_buffer_x is not None and len(self._device_buffer_x) > 0:
                 buf_len = len(self._device_buffer_x)
-                k_samples = min(buf_len, max(1, x.size(0) // 2))
+                # Match current batch size so historical classes receive balanced gradient weight
+                k_samples = min(buf_len, max(4, x.size(0)))
                 idx = torch.randint(0, buf_len, (k_samples,), device=device)
                 rx = self._device_buffer_x[idx]
                 ry = self._device_buffer_y[idx]
@@ -113,9 +152,10 @@ class MALFSILMethod(BaseILMethod):
         logits, features = model(combined_x, return_features=True, limit_to_current=True)
         ce_loss = criterion(logits, combined_y)
 
-        # 2. Knowledge Distillation Loss
+        # 2. Asymmetric Knowledge Distillation Loss (strictly on historical classes 0..prev_num_classes-1)
         distill_loss = torch.tensor(0.0, device=device)
         if task_id > 0 and self.prev_model is not None and self.prev_num_classes > 0:
+            self.prev_model.to(device)
             with torch.no_grad():
                 prev_logits = self.prev_model(combined_x, limit_to_current=True)
 
@@ -124,34 +164,42 @@ class MALFSILMethod(BaseILMethod):
             distill_loss = F.kl_div(p_soft, q_soft, reduction="batchmean") * (self.temperature ** 2)
             distill_loss = self.distill_weight * distill_loss
 
-        # 3. Global Prototype Alignment Loss
+        # 3. Vectorized Global Prototype Alignment Loss (Tier 3)
         proto_loss = torch.tensor(0.0, device=device)
         if self.global_prototypes:
-            proto_losses = []
-            for i in range(combined_x.size(0)):
-                label_i = int(combined_y[i].item())
-                feat_i = features[i]
-                if label_i in self.global_prototypes:
-                    target_proto = self.global_prototypes[label_i].to(device)
-                    # Pull towards ground-truth prototype
-                    pos_dist = F.mse_loss(feat_i, target_proto)
+            proto_classes = sorted(self.global_prototypes.keys())
+            proto_matrix = torch.stack(
+                [self.global_prototypes[c].to(device) for c in proto_classes], dim=0
+            )  # (M, D)
+            norm_protos = F.normalize(proto_matrix, p=2, dim=1)
+            norm_feats = F.normalize(features, p=2, dim=1)  # (B, D)
 
-                    # Push away from other prototypes
-                    neg_dists = []
-                    for other_cls, other_proto in self.global_prototypes.items():
-                        if other_cls != label_i:
-                            d = torch.norm(feat_i - other_proto.to(device), p=2)
-                            neg_dists.append(d)
+            # Map sample labels to prototype indices
+            class_to_idx = {c: idx for idx, c in enumerate(proto_classes)}
+            valid_indices = [
+                (i, class_to_idx[int(combined_y[i].item())])
+                for i in range(combined_y.size(0))
+                if int(combined_y[i].item()) in class_to_idx
+            ]
+            if valid_indices:
+                sample_idx = torch.tensor([p[0] for p in valid_indices], dtype=torch.long, device=device)
+                target_proto_idx = torch.tensor([p[1] for p in valid_indices], dtype=torch.long, device=device)
 
-                    if neg_dists:
-                        min_neg = torch.min(torch.stack(neg_dists))
-                        margin_loss = F.relu(self.margin - min_neg)
-                        proto_losses.append(pos_dist + margin_loss)
-                    else:
-                        proto_losses.append(pos_dist)
+                v_feats = norm_feats[sample_idx]  # (V, D)
+                v_targets = norm_protos[target_proto_idx]  # (V, D)
 
-            if proto_losses:
-                proto_loss = self.proto_weight * torch.mean(torch.stack(proto_losses))
+                # Pull sample embedding toward global class prototype
+                pos_dist = (1.0 - (v_feats * v_targets).sum(dim=1)).mean()
+
+                # Push away from competing class prototypes via cosine margin
+                if len(proto_classes) > 1:
+                    sim_matrix = torch.matmul(v_feats, norm_protos.t())  # (V, M)
+                    sim_matrix.scatter_(1, target_proto_idx.unsqueeze(1), -1.0)
+                    max_neg_sim, _ = sim_matrix.max(dim=1)
+                    margin_loss = F.relu(max_neg_sim - (1.0 - self.margin)).mean()
+                    proto_loss = self.proto_weight * (pos_dist + margin_loss)
+                else:
+                    proto_loss = self.proto_weight * pos_dist
 
         total_loss = ce_loss + distill_loss + proto_loss
         return total_loss, {
@@ -169,25 +217,47 @@ class MALFSILMethod(BaseILMethod):
     ) -> Dict[int, Tuple[torch.Tensor, int]]:
         """
         Extract client's local class prototypes: class_id -> (mean_feature_tensor, sample_count).
+        Includes both current task batches and local replay buffer exemplars.
         """
         model.eval()
-        class_embeddings: Dict[int, List[torch.Tensor]] = {}
+        class_sums: Dict[int, torch.Tensor] = {}
+        class_counts: Dict[int, int] = {}
 
         with torch.no_grad():
             for bx, by in train_loader:
                 bx_dev = bx.to(device)
-                feat = model.get_features(bx_dev)
-                for i in range(bx.size(0)):
-                    cls_id = int(by[i].item())
-                    if cls_id not in class_embeddings:
-                        class_embeddings[cls_id] = []
-                    class_embeddings[cls_id].append(feat[i].cpu())
+                feat = model.get_features(bx_dev).cpu()
+                for cls_val in torch.unique(by).tolist():
+                    cls_id = int(cls_val)
+                    mask = (by == cls_id)
+                    cnt = int(mask.sum().item())
+                    if cnt > 0:
+                        f_sum = feat[mask].sum(dim=0)
+                        if cls_id not in class_sums:
+                            class_sums[cls_id] = f_sum
+                            class_counts[cls_id] = cnt
+                        else:
+                            class_sums[cls_id] += f_sum
+                            class_counts[cls_id] += cnt
 
-        local_protos = {}
-        for cls_id, emb_list in class_embeddings.items():
-            stacked = torch.stack(emb_list, dim=0)
-            mean_proto = stacked.mean(dim=0)
-            local_protos[cls_id] = (mean_proto, len(emb_list))
+            # Also include historical exemplars stored in the local buffer
+            for cls_id, (buf_x, _) in self.buffer.items():
+                if len(buf_x) > 0:
+                    feat = model.get_features(buf_x.to(device)).cpu()
+                    cnt = int(feat.size(0))
+                    f_sum = feat.sum(dim=0)
+                    if cls_id not in class_sums:
+                        class_sums[cls_id] = f_sum
+                        class_counts[cls_id] = cnt
+                    else:
+                        class_sums[cls_id] += f_sum
+                        class_counts[cls_id] += cnt
+
+        local_protos = {
+            cls_id: (class_sums[cls_id] / float(class_counts[cls_id]), class_counts[cls_id])
+            for cls_id in class_sums
+            if class_counts[cls_id] > 0
+        }
 
         model.train()
         return local_protos
@@ -199,7 +269,8 @@ class MALFSILMethod(BaseILMethod):
         train_loader: Optional[DataLoader] = None,
         device: torch.device = torch.device("cpu")
     ) -> None:
-        """Herding exemplar buffer update."""
+        """Herding exemplar buffer update and post-task classifier weight alignment."""
+        self.align_classifier_weights(model, task_id)
         if train_loader is None or len(train_loader) == 0:
             return
 

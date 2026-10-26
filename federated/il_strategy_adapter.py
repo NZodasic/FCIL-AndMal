@@ -43,6 +43,7 @@ class ILMethodStrategyAdapter:
         # FLClient-required attributes
         self.current_task: int = 0
         self.n_classes_so_far: int = classes_per_task  # Task 0 starts with first 3
+        self._last_train_loader: Optional[DataLoader] = None
 
     def before_task(self, task_id: int, n_new_classes: int) -> None:
         """Expand model head and call IL pre-task hook."""
@@ -58,6 +59,11 @@ class ILMethodStrategyAdapter:
         )
         self.n_classes_so_far = target_classes
 
+    def set_adaptive_lambda(self, adaptive_lambda: float) -> None:
+        """Forward per-client adaptive lambda_i^{(t)} to underlying IL method (FL-CL-IDS)."""
+        if hasattr(self.il_method, "set_adaptive_lambda"):
+            self.il_method.set_adaptive_lambda(adaptive_lambda)
+
     def train_task(
         self,
         train_loader: DataLoader,
@@ -66,6 +72,7 @@ class ILMethodStrategyAdapter:
         **kwargs,
     ) -> Dict[str, Any]:
         """Run local training for one FL round (n_epochs epochs)."""
+        self._last_train_loader = train_loader
         self.model.to(self.device)
         self.model.train()
 
@@ -89,16 +96,21 @@ class ILMethodStrategyAdapter:
                     device=self.device,
                 )
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(trainable, max_norm=5.0)
                 optimizer.step()
                 total_loss += loss.item()
                 total_batches += 1
+
+        # Apply post-round classifier weight alignment if supported by IL method
+        if task_id > 0 and hasattr(self.il_method, "align_classifier_weights"):
+            self.il_method.align_classifier_weights(self.model, task_id)
 
         avg_loss = total_loss / max(1, total_batches)
         return {"loss": avg_loss, "task_id": task_id}
 
     def after_task(self, task_id: int, **kwargs) -> None:
         """Call IL post-task hook."""
-        train_loader = kwargs.get("train_loader", None)
+        train_loader = kwargs.get("train_loader", self._last_train_loader)
         self.il_method.after_task(
             task_id=task_id,
             model=self.model,
@@ -107,7 +119,11 @@ class ILMethodStrategyAdapter:
         )
 
     # Prototype support for MALFSIL
-    def get_prototypes(self) -> Dict[int, torch.Tensor]:
+    def get_prototypes(self) -> Dict[int, Any]:
+        if hasattr(self.il_method, "compute_local_prototypes") and self._last_train_loader is not None:
+            return self.il_method.compute_local_prototypes(
+                self.model, self._last_train_loader, self.device
+            )
         if hasattr(self.il_method, "global_prototypes"):
             return self.il_method.global_prototypes
         return {}

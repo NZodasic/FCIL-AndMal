@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 
 from incremental.base_strategy import IncrementalStrategy
 from utils.device import resolve_device
-from federated.drift.detectors import BaseDriftDetector
+from federated.drift.detectors import BaseDriftDetector, PageHinkleyDetector
 from federated.drift.normalizer import DriftScoreNormalizer
 
 
@@ -194,6 +194,38 @@ class FLClient:
 
         self.model.load_state_dict(adapted_state)
 
+    def evaluate_covariate_drift(self, train_loader: DataLoader, max_samples: int = 256) -> float:
+        """Compute input-feature Page-Hinkley covariate drift score Delta_i^{(t)} (Eqs. 10-12)."""
+        if self.drift_detector is None or not hasattr(self.drift_detector, "update_features"):
+            return float(self.last_drift_score)
+
+        batches_x = []
+        collected = 0
+        for batch in train_loader:
+            if isinstance(batch, (tuple, list)) and len(batch) >= 1:
+                bx = batch[0]
+            else:
+                continue
+            batches_x.append(bx.detach().cpu().numpy())
+            collected += int(bx.size(0))
+            if collected >= max_samples:
+                break
+
+        if not batches_x:
+            return 0.0
+
+        X_np = np.concatenate(batches_x, axis=0)[:max_samples]
+        drift_fraction, _, _ = self.drift_detector.update_features(X_np)
+        self.last_drift_score = float(drift_fraction)
+        return self.last_drift_score
+
+    def set_adaptive_lambda(self, adaptive_lambda: float) -> None:
+        """Set per-client adaptive EWC regularization multiplier lambda_i^{(t)} (Eq. 5)."""
+        if hasattr(self.strategy, "set_adaptive_lambda"):
+            self.strategy.set_adaptive_lambda(adaptive_lambda)
+        elif hasattr(self.strategy, "ewc_lambda"):
+            self.strategy.ewc_lambda = float(adaptive_lambda)
+
     def _evaluate_and_adapt_drift(
         self,
         train_loader: DataLoader,
@@ -203,7 +235,23 @@ class FLClient:
         self.model.eval()
         divergence = self.compute_divergence()
 
-        # Collect sample predictions to update streaming drift detector
+        # FL-CL-IDS Page-Hinkley path: uses covariate drift fraction Delta_i^{(t)} directly
+        # and adapts via AdaptiveLambdaController + Round-Skip rather than parameter shrinkage.
+        if isinstance(self.drift_detector, PageHinkleyDetector):
+            s_ct = float(self.drift_detector.get_statistic())
+            self.last_drift_score = s_ct
+            return {
+                'drift_score': float(s_ct),
+                'raw_drift_statistic': float(s_ct),
+                'divergence': float(divergence),
+                'local_threshold': float(self.drift_detector.tau_low),
+                'drift_detected': bool(self.drift_detector.drift_detected),
+                'warning_detected': bool(self.drift_detector.warning_detected),
+                'drift_state': str(self.drift_detector.get_state()),
+                'drift_adapted': True,
+            }
+
+        # Collect sample predictions to update streaming drift detector (FL-MalDrift)
         preds_list: List[int] = []
         targets_list: List[int] = []
         with torch.no_grad():

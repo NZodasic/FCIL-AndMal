@@ -37,7 +37,17 @@ class LwFMethod(BaseILMethod):
         if task_id > 0:
             self.prev_model = model.clone_model().to(device)
             self.prev_model.eval()
-            self.prev_num_classes = self.prev_model.current_classes
+            for p in self.prev_model.parameters():
+                p.requires_grad = False
+            cpt = (
+                getattr(model.config, "classes_per_task", 3)
+                if hasattr(model, "config") and model.config is not None
+                else 3
+            )
+            self.prev_num_classes = min(self.prev_model.current_classes, task_id * cpt)
+        else:
+            self.prev_model = None
+            self.prev_num_classes = 0
 
     def compute_loss(
         self,

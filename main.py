@@ -69,8 +69,10 @@ def parse_args():
     # Feature representation & Dataset
     parser.add_argument("--feature_type", type=str, choices=["dynamic", "static", "fused"], default="dynamic",
                         help="Feature representation: dynamic (141/282d), static (reduced 300d), or fused (441d)")
-    parser.add_argument("--backbone", type=str, choices=["hybrid_tcn_cnn", "cnn1d", "tcn", "mlp", "fused"], default="hybrid_tcn_cnn",
-                        help="Neural backbone architecture: 'hybrid_tcn_cnn' (Primary TCN+CNN), 'cnn1d', 'tcn', 'mlp', or 'fused'")
+    parser.add_argument("--backbone", type=str,
+                        choices=["hybrid_tcn_cnn", "cnn1d", "tcn", "mlp", "fused", "cnn_bilstm_attention", "falcon"],
+                        default="hybrid_tcn_cnn",
+                        help="Neural backbone architecture: 'hybrid_tcn_cnn', 'cnn_bilstm_attention' (Falcon), 'cnn1d', 'tcn', 'mlp', or 'fused'")
     parser.add_argument("--raw_root", type=str, default="./raw_data",
                         help="Path to raw CIC-AndMal-2020 directory")
     parser.add_argument("--prepared_dir", type=str, default="./prepared_data",
@@ -85,13 +87,25 @@ def parse_args():
                         help="Prepare, validate, and partition data without starting training")
 
     # Incremental Learning & Methods
-    parser.add_argument("--method", type=str, choices=["finetune", "joint", "ewc", "lwf", "replay", "spcil", "malfscil", "malfsil"],
+    parser.add_argument("--method", type=str,
+                        choices=["finetune", "joint", "ewc", "lwf", "replay", "spcil", "malfscil", "malfsil", "falcon"],
                         default="malfscil", help="Class-Incremental Learning method")
     parser.add_argument("--ewc_lambda", type=float, default=5000.0, help="Fisher information loss weight for EWC")
     parser.add_argument("--lwf_temp", type=float, default=2.0, help="Distillation temperature for LwF")
     parser.add_argument("--lwf_alpha", type=float, default=1.0, help="Distillation loss scale for LwF")
     parser.add_argument("--buffer_size", type=int, default=20, choices=[5, 20, 50],
-                        help="Exemplar replay buffer size m samples/class for Replay")
+                        help="Exemplar replay buffer size m samples/class for Replay / Falcon")
+    # Falcon parameters (Yang et al., IEEE TCE 2026)
+    falcon_grp = parser.add_argument_group("Falcon incremental & focal learning (Yang et al. 2026)")
+    falcon_grp.add_argument("--falcon_alpha", type=float, default=1.0, help="Falcon classification loss weight alpha")
+    falcon_grp.add_argument("--falcon_beta", type=float, default=1.0, help="Falcon historical teacher distillation weight beta")
+    falcon_grp.add_argument("--falcon_gamma", type=float, default=0.5, help="Falcon new-class teacher distillation weight gamma")
+    falcon_grp.add_argument("--falcon_temp", type=float, default=2.0, help="Falcon distillation temperature")
+    falcon_grp.add_argument("--falcon_replay_ratio", type=float, default=0.2, help="Falcon memory replay batch mix ratio delta")
+    falcon_grp.add_argument("--focal_gamma", type=float, default=2.0, help="Focal loss focusing parameter gamma")
+    falcon_grp.add_argument("--focal_alpha", type=float, default=1.0, help="Focal loss class weighting factor alpha")
+    falcon_grp.add_argument("--use_balanced_sampler", action="store_true", default=False,
+                            help="Enable Falcon BalancedBatchSampler for per-class quota mini-batches")
     parser.add_argument("--fscil_k_shot", type=int, default=5,
                         help="Labeled examples available per new class")
     parser.add_argument("--fscil_n_way", type=int, default=3,
@@ -143,8 +157,8 @@ def parse_args():
     )
     drift_grp.add_argument(
         "--drift_detector", type=str, default="hddm_w",
-        choices=["hddm_w", "hddm_a", "adwin", "ddm", "eddm"],
-        help="Drift detector algorithm used client-side (Algorithm 1)"
+        choices=["page_hinkley", "hddm_w", "hddm_a", "adwin", "ddm", "eddm", "kl_drift"],
+        help="Drift detector algorithm used client-side ('page_hinkley' for FL-CL-IDS/EWCDR; 'kl_drift' for Falcon)"
     )
     drift_grp.add_argument(
         "--drift_k", type=float, default=1.5,
@@ -230,6 +244,13 @@ def build_configs_from_args(args) -> ExperimentConfig:
         malfscil_arc_weight=args.malfscil_arc_weight,
         malfscil_arc_scale=args.malfscil_arc_scale,
         malfscil_arc_margin=args.malfscil_arc_margin,
+        falcon_alpha=args.falcon_alpha,
+        falcon_beta=args.falcon_beta,
+        falcon_gamma=args.falcon_gamma,
+        falcon_temperature=args.falcon_temp,
+        falcon_replay_ratio=args.falcon_replay_ratio,
+        focal_gamma=args.focal_gamma,
+        focal_alpha=args.focal_alpha,
     )
 
     batch_size = get_batch_size_for_mode(args.mode)
@@ -252,12 +273,16 @@ def build_configs_from_args(args) -> ExperimentConfig:
         device=str(resolved_dev),
     )
 
-    # --- FL-MalDrift drift config (additive; None when drift is disabled) ---
+    # --- FL-CL-IDS / FL-MalDrift drift config ---
     drift_cfg: Optional[DriftConfig] = None
-    if getattr(args, 'enable_drift', False):
+    auto_ewcdr = (args.mode == "federated" and method_name == "ewc" and "EWCDR" in args.exp_name.upper())
+    if getattr(args, 'enable_drift', False) or auto_ewcdr:
+        det_type = getattr(args, 'drift_detector', 'hddm_w')
+        if auto_ewcdr and not getattr(args, 'enable_drift', False):
+            det_type = "page_hinkley"
         drift_cfg = DriftConfig(
             enabled=True,
-            detector_type=getattr(args, 'drift_detector', 'hddm_w'),
+            detector_type=det_type,
             window_size=getattr(args, 'drift_window', 10),
             warmup_rounds=getattr(args, 'drift_warmup', 3),
             alpha=getattr(args, 'drift_alpha', 0.8),
@@ -534,6 +559,7 @@ def main():
             device=resolved_device,
             config=exp_cfg,
             evaluator=evaluator,
+            validation_evaluator=validation_evaluator,
             logger=logger,
             checkpoint_manager=ckpt_mgr,
             enable_drift_filtering=(exp_cfg.drift is not None and exp_cfg.drift.enabled),
@@ -596,13 +622,22 @@ def main():
                 y_c = np.array([LABEL2ID.get(lbl, -1) for lbl in df_c["label"].values], dtype=np.int64)
                 del df_c
                 ds_c = TabularMalwareDataset(X_c, y_c)
-                drop_last = len(ds_c) > exp_cfg.fl.batch_size and (len(ds_c) % exp_cfg.fl.batch_size == 1)
-                train_loaders[cid] = DataLoader(
-                    ds_c,
-                    batch_size=exp_cfg.fl.batch_size,
-                    shuffle=True,
-                    drop_last=drop_last,
-                )
+                if getattr(args, "use_balanced_sampler", False) or args.method == "falcon":
+                    from data.sampler import BalancedBatchSampler
+                    sampler = BalancedBatchSampler(
+                        labels=y_c,
+                        batch_size=exp_cfg.fl.batch_size,
+                        seed=args.seed + task_id * 100 + cid,
+                    )
+                    train_loaders[cid] = DataLoader(ds_c, batch_sampler=sampler)
+                else:
+                    drop_last = len(ds_c) > exp_cfg.fl.batch_size and (len(ds_c) % exp_cfg.fl.batch_size == 1)
+                    train_loaders[cid] = DataLoader(
+                        ds_c,
+                        batch_size=exp_cfg.fl.batch_size,
+                        shuffle=True,
+                        drop_last=drop_last,
+                    )
 
             task_metrics = server.run_task(
                 task_id=task_id,
@@ -629,6 +664,7 @@ def main():
             "all_task_results": all_task_results,
             "continual_matrix": evaluator.continual_matrix.get_summary_dict(),
         }
+        logger.log_final_results(final_results["continual_matrix"])
         export_experiment_results(
             workbook_path=os.path.join(exp_cfg.output_root, "evaluation_results.xlsx"),
             experiment_name=exp_cfg.exp_name,

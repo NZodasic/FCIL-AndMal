@@ -67,6 +67,33 @@ class ReplayHerdingMethod(BaseILMethod):
         ce_loss = criterion(logits, combined_y)
         return ce_loss, {"ce_loss": float(ce_loss.item()), "total_loss": float(ce_loss.item())}
 
+    def align_classifier_weights(self, model: FCILNet, task_id: int) -> None:
+        """Apply Weight Alignment (WA) on classifier head to prevent recency norm inflation."""
+        if task_id <= 0 or not hasattr(model, "classifier"):
+            return
+        fc = getattr(model.classifier, "fc", model.classifier)
+        if not hasattr(fc, "weight"):
+            return
+        cpt = (
+            getattr(model.config, "classes_per_task", 3)
+            if hasattr(model, "config") and model.config is not None
+            else 3
+        )
+        prev_cls = task_id * cpt
+        curr_cls = min(model.current_classes, (task_id + 1) * cpt)
+        if curr_cls <= prev_cls:
+            return
+
+        with torch.no_grad():
+            w = fc.weight.data
+            old_norms = torch.norm(w[:prev_cls], p=2, dim=1)
+            new_norms = torch.norm(w[prev_cls:curr_cls], p=2, dim=1)
+            mean_old = float(old_norms.mean().item())
+            mean_new = float(new_norms.mean().item())
+            if mean_old > 1e-6 and mean_new > mean_old:
+                gamma_wa = mean_old / mean_new
+                w[prev_cls:curr_cls].mul_(gamma_wa)
+
     def after_task(
         self,
         task_id: int,
@@ -75,6 +102,7 @@ class ReplayHerdingMethod(BaseILMethod):
         device: torch.device = torch.device("cpu")
     ) -> None:
         """Construct/update exemplar memory using Herding on latent embeddings."""
+        self.align_classifier_weights(model, task_id)
         if train_loader is None or len(train_loader) == 0:
             return
 

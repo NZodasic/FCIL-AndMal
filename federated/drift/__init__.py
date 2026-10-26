@@ -10,10 +10,12 @@ from federated.drift.detectors import (
     DDMDetector,
     EDDMDetector,
     HDDMDetector,
+    KLDriftDetector,
+    PageHinkleyDetector,
     build_drift_detector,
 )
 from federated.drift.normalizer import DriftScoreNormalizer
-from federated.drift.controller import ServerDriftController
+from federated.drift.controller import ServerDriftController, AdaptiveLambdaController
 
 __all__ = [
     "BaseDriftDetector",
@@ -21,7 +23,10 @@ __all__ = [
     "DDMDetector",
     "EDDMDetector",
     "HDDMDetector",
+    "KLDriftDetector",
+    "PageHinkleyDetector",
     "build_drift_detector",
     "DriftScoreNormalizer",
     "ServerDriftController",
+    "AdaptiveLambdaController",
 ]

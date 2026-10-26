@@ -344,18 +344,307 @@ class HDDMDetector(BaseDriftDetector):
         return self.drift_detected, self.warning_detected
 
 
+class KLDriftDetector(BaseDriftDetector):
+    """
+    Sliding-Window Data Drift Detector based on Kullback-Leibler (KL) Divergence.
+    
+    Implements Algorithm 2 from Falcon (Yang et al., IEEE TCE 2026):
+    - Maintains a reference window D_ref and a sliding current window D_cur.
+    - Constructs histograms with B bins over streaming inputs/errors.
+    - Applies Laplace smoothing: P'_i = (P_i + eps) / (1 + eps * B).
+    - Measures divergence: D_{KL}(P' || Q') = sum_i P'_i * log(P'_i / Q'_i).
+    - Evaluates backup Jensen-Shannon divergence for robustness check.
+    - Triggers drift when KL > tau and refreshes reference distribution.
+    """
+
+    def __init__(
+        self,
+        window_size: int = 50,
+        threshold: float = 0.15,
+        warning_ratio: float = 0.7,
+        num_bins: int = 10,
+        eps: float = 1e-4,
+    ):
+        super().__init__(name="KLDrift")
+        self.window_size = int(window_size)
+        self.threshold = float(threshold)
+        self.warning_threshold = float(threshold * warning_ratio)
+        self.num_bins = int(num_bins)
+        self.eps = float(eps)
+
+        self.ref_window: List[float] = []
+        self.cur_window: List[float] = []
+        self.ref_hist: Optional[np.ndarray] = None
+        self.js_divergence: float = 0.0
+
+    def reset_statistics(self) -> None:
+        self.ref_window = []
+        self.cur_window = []
+        self.ref_hist = None
+        self.js_divergence = 0.0
+
+    def _compute_distribution(self, data: np.ndarray, bins: np.ndarray) -> np.ndarray:
+        """Compute normalized probability distribution with Laplace smoothing."""
+        counts, _ = np.histogram(data, bins=bins)
+        total = max(1, len(data))
+        probs = counts / total
+        smoothed = (probs + self.eps) / (1.0 + self.eps * self.num_bins)
+        return smoothed / np.sum(smoothed)
+
+    def _compute_kl(self, p: np.ndarray, q: np.ndarray) -> float:
+        """Kullback-Leibler divergence D_KL(P || Q)."""
+        return float(np.sum(p * np.log(p / q)))
+
+    def _compute_js(self, p: np.ndarray, q: np.ndarray) -> float:
+        """Jensen-Shannon divergence JS(P || Q) = 0.5 * KL(P || M) + 0.5 * KL(Q || M)."""
+        m = 0.5 * (p + q)
+        return float(0.5 * self._compute_kl(p, m) + 0.5 * self._compute_kl(q, m))
+
+    def update(self, error: float) -> Tuple[bool, bool]:
+        """Update detector with a single value."""
+        self.total_samples += 1
+        self.drift_detected = False
+        self.warning_detected = False
+
+        # Initialize reference window
+        if len(self.ref_window) < self.window_size:
+            self.ref_window.append(float(error))
+            if len(self.ref_window) == self.window_size:
+                # Reference window is fully initialized
+                ref_arr = np.array(self.ref_window, dtype=np.float64)
+                bins = np.linspace(0.0, 1.0, self.num_bins + 1)
+                self.ref_hist = self._compute_distribution(ref_arr, bins)
+            return False, False
+
+        # Add to current sliding window
+        self.cur_window.append(float(error))
+        if len(self.cur_window) > self.window_size:
+            self.cur_window.pop(0)
+
+        if len(self.cur_window) >= max(10, self.window_size // 2):
+            ref_arr = np.array(self.ref_window, dtype=np.float64)
+            cur_arr = np.array(self.cur_window, dtype=np.float64)
+            bins = np.linspace(0.0, 1.0, self.num_bins + 1)
+
+            p_ref = self._compute_distribution(ref_arr, bins)
+            q_cur = self._compute_distribution(cur_arr, bins)
+
+            kl_div = self._compute_kl(p_ref, q_cur)
+            js_div = self._compute_js(p_ref, q_cur)
+            self.raw_statistic = float(kl_div)
+            self.js_divergence = float(js_div)
+
+            if kl_div > self.threshold:
+                self.drift_detected = True
+                # Algorithm 2, lines 14-15: update reference window to current window
+                self.ref_window = list(self.cur_window)
+                self.cur_window = []
+                self.ref_hist = q_cur
+            elif kl_div > self.warning_threshold:
+                self.warning_detected = True
+
+        return self.drift_detected, self.warning_detected
+
+    def update_batch(self, preds: np.ndarray, targets: np.ndarray) -> Tuple[bool, bool]:
+        """Update detector with batch predictions and targets."""
+        preds = np.asarray(preds)
+        targets = np.asarray(targets)
+        errors = (preds != targets).astype(np.float64)
+        for err in errors:
+            d, w = self.update(float(err))
+            if d:
+                break
+        return self.drift_detected, self.warning_detected
+
+
+class PageHinkleyDetector(BaseDriftDetector):
+    """Page-Hinkley (PH) Covariate & Stream Drift Detector for FL-CL-IDS.
+
+    Implements Section III-E, Equations (10)-(12) of:
+        Khreasat & Villarrubia Gonzalez, "Drift-Aware Federated Continual Learning
+        for Privacy-Preserving Android Malware Intrusion Detection", IEEE Access, 2026.
+
+    For each feature k in {1, ..., d}, maintains running mean x_bar_k, cumulative
+    deviation m_k^{(n)}, and extremum M_k^{(n)}:
+        m_k^{(n)} = m_k^{(n-1)} + (x_k^{(n)} - x_bar_k - delta)
+        M_k^{(n)} = max_{1 <= j <= n} m_k^{(j)}
+        PH_k^{(n)} = M_k^{(n)} - m_k^{(n)}
+    The normalized client drift score is the fraction of features exceeding lambda_PH:
+        Delta_i^{(t)} = (1 / d) * sum_{k=1}^d I[PH_k > lambda_PH] in [0, 1].
+    """
+
+    def __init__(
+        self,
+        delta: float = 0.005,
+        lambda_ph: float = 50.0,
+        alpha: float = 0.90,
+        tau_low: float = 0.05,
+        tau_high: float = 0.30,
+        min_instances: int = 10,
+    ):
+        super().__init__(name="PageHinkley")
+        self.delta = float(delta)
+        self.lambda_ph = float(lambda_ph)
+        self.alpha = float(alpha)
+        self.tau_low = float(tau_low)
+        self.tau_high = float(tau_high)
+        self.min_instances = int(min_instances)
+        self.reset()
+
+    def reset_statistics(self) -> None:
+        # 1D scalar stream statistics (for BaseDriftDetector compatibility)
+        self.x_mean_1d: float = 0.0
+        self.m_down_1d: float = 0.0
+        self.M_down_1d: float = 0.0
+        self.m_up_1d: float = 0.0
+        self.M_up_1d: float = 0.0
+        self.n_1d: int = 0
+
+        # d-dimensional feature covariate statistics (Eqs. 10-12)
+        self.ref_mean: Optional[np.ndarray] = None
+        self.ref_std: Optional[np.ndarray] = None
+        self.m_down: Optional[np.ndarray] = None
+        self.M_down: Optional[np.ndarray] = None
+        self.m_up: Optional[np.ndarray] = None
+        self.M_up: Optional[np.ndarray] = None
+        self.per_feature_ph: Optional[np.ndarray] = None
+        self.feature_drift_fraction: float = 0.0
+        self.rounds_in_current_regime: int = 0
+
+    def update(self, error: float) -> Tuple[bool, bool]:
+        """Update 1D Page-Hinkley detector with a single scalar observation."""
+        self.total_samples += 1
+        self.n_1d += 1
+        x = float(error)
+
+        self.x_mean_1d += (x - self.x_mean_1d) / float(self.n_1d)
+        self.m_down_1d = self.alpha * self.m_down_1d + (x - self.x_mean_1d - self.delta)
+        self.M_down_1d = max(self.M_down_1d, self.m_down_1d)
+
+        self.m_up_1d = self.alpha * self.m_up_1d + (x - self.x_mean_1d + self.delta)
+        self.M_up_1d = min(self.M_up_1d, self.m_up_1d)
+
+        ph_stat = max(self.M_down_1d - self.m_down_1d, self.m_up_1d - self.M_up_1d)
+        eff_thresh = min(self.lambda_ph, max(1.5, 0.15 * self.n_1d))
+        norm_score = float(np.clip(ph_stat / max(1e-6, eff_thresh), 0.0, 1.0))
+
+        self.raw_statistic = norm_score
+        self.drift_detected = False
+        self.warning_detected = False
+
+        if self.n_1d >= self.min_instances:
+            if ph_stat > eff_thresh or norm_score >= self.tau_high:
+                self.drift_detected = True
+                self.m_down_1d = 0.0
+                self.M_down_1d = 0.0
+                self.m_up_1d = 0.0
+                self.M_up_1d = 0.0
+            elif norm_score >= self.tau_low:
+                self.warning_detected = True
+
+        return self.drift_detected, self.warning_detected
+
+    def update_features(self, features: np.ndarray) -> Tuple[float, bool, bool]:
+        """Evaluate Page-Hinkley covariate drift across d input features (Eqs. 10-12).
+
+        Args:
+            features: 2D array of shape (N, d) containing local input feature vectors.
+
+        Returns:
+            Tuple of (drift_fraction Delta_i^{(t)} in [0, 1], drift_detected, warning_detected).
+        """
+        X = np.asarray(features, dtype=np.float64)
+        if X.ndim == 1:
+            X = X.reshape(1, -1)
+        n_samples, d = X.shape
+        if n_samples == 0 or d == 0:
+            return 0.0, False, False
+
+        self.total_samples += n_samples
+        self.rounds_in_current_regime += 1
+
+        batch_mean = np.mean(X, axis=0)
+        batch_std = np.std(X, axis=0) + 1e-6
+
+        if self.ref_mean is None or self.ref_mean.shape[0] != d:
+            # First observation window initializes reference feature statistics
+            self.ref_mean = batch_mean.copy()
+            self.ref_std = batch_std.copy()
+            self.m_down = np.zeros(d, dtype=np.float64)
+            self.M_down = np.zeros(d, dtype=np.float64)
+            self.m_up = np.zeros(d, dtype=np.float64)
+            self.M_up = np.zeros(d, dtype=np.float64)
+            self.per_feature_ph = np.zeros(d, dtype=np.float64)
+            self.feature_drift_fraction = 0.0
+            self.raw_statistic = 0.0
+            self.drift_detected = False
+            self.warning_detected = False
+            return 0.0, False, False
+
+        # Standardized deviations relative to running reference distribution
+        z_X = (X - self.ref_mean) / self.ref_std
+        centered_down = z_X - self.delta
+        centered_up = z_X + self.delta
+
+        # Cumulative Page-Hinkley sums along the sample stream n = 1..N (Eqs. 10-11)
+        cum_down = self.alpha * self.m_down + np.cumsum(centered_down, axis=0)
+        cum_up = self.alpha * self.m_up + np.cumsum(centered_up, axis=0)
+
+        max_cum_down = np.maximum(self.M_down, np.max(cum_down, axis=0))
+        min_cum_up = np.minimum(self.M_up, np.min(cum_up, axis=0))
+
+        self.m_down = cum_down[-1]
+        self.M_down = max_cum_down
+        self.m_up = cum_up[-1]
+        self.M_up = min_cum_up
+
+        ph_down = self.M_down - self.m_down
+        ph_up = self.m_up - self.M_up
+        # Also include total cumulative excursion from baseline for sustained mean shift
+        ph_shift = np.maximum(np.abs(self.m_down), np.abs(self.m_up))
+        self.per_feature_ph = np.maximum(np.maximum(ph_down, ph_up), ph_shift)
+
+        # Effective threshold scales with shard size up to lambda_ph = 50.0 (Table 2)
+        eff_lambda_ph = min(self.lambda_ph, max(3.0, 0.35 * float(n_samples)))
+
+        # Eq. (12): Delta_i^{(t)} = (1 / d) * sum_{k=1}^d I[PH_k > lambda_PH]
+        drifted_mask = self.per_feature_ph > eff_lambda_ph
+        drift_fraction = float(np.mean(drifted_mask))
+
+        self.feature_drift_fraction = drift_fraction
+        self.raw_statistic = drift_fraction
+        self.drift_detected = bool(drift_fraction > self.tau_high)
+        self.warning_detected = bool(drift_fraction >= self.tau_low)
+
+        # Adapt reference mean gradually so stationary rounds within a task decay PH
+        adapt_rate = 0.35 if self.warning_detected else 0.20
+        self.ref_mean = (1.0 - adapt_rate) * self.ref_mean + adapt_rate * batch_mean
+        self.ref_std = (1.0 - adapt_rate) * self.ref_std + adapt_rate * batch_std
+
+        # Reset cumulative extrema on drifted features after detection to avoid permanent saturation
+        if np.any(drifted_mask):
+            self.m_down[drifted_mask] *= 0.5
+            self.M_down[drifted_mask] = self.m_down[drifted_mask]
+            self.m_up[drifted_mask] *= 0.5
+            self.M_up[drifted_mask] = self.m_up[drifted_mask]
+
+        return drift_fraction, self.drift_detected, self.warning_detected
+
+
 def build_drift_detector(detector_type: str = "hddm_w", **kwargs) -> BaseDriftDetector:
     """Factory function to instantiate specified drift detector.
 
     Args:
-        detector_type: One of ('hddm_w', 'hddm_a', 'adwin', 'ddm', 'eddm').
+        detector_type: One of ('page_hinkley', 'hddm_w', 'hddm_a', 'adwin', 'ddm', 'eddm', 'kl_drift').
         **kwargs: Optional hyperparameter overrides.
 
     Returns:
         Instance of BaseDriftDetector.
     """
     dtype = detector_type.lower()
-    if dtype in ("hddm_w", "hddm-w", "hddm"):
+    if dtype in ("page_hinkley", "page-hinkley", "ph", "fl_cl_ids", "ewcdr"):
+        return PageHinkleyDetector(**kwargs)
+    elif dtype in ("hddm_w", "hddm-w", "hddm"):
         return HDDMDetector(variant="HDDM_W", **kwargs)
     elif dtype in ("hddm_a", "hddm-a"):
         return HDDMDetector(variant="HDDM_A", **kwargs)
@@ -365,8 +654,11 @@ def build_drift_detector(detector_type: str = "hddm_w", **kwargs) -> BaseDriftDe
         return DDMDetector(**kwargs)
     elif dtype == "eddm":
         return EDDMDetector(**kwargs)
+    elif dtype in ("kl_drift", "kl", "falcon_drift", "falcon"):
+        return KLDriftDetector(**kwargs)
     else:
         raise ValueError(
             f"Unsupported drift detector '{detector_type}'. Supported: "
-            f"['hddm_w', 'hddm_a', 'adwin', 'ddm', 'eddm']"
+            f"['page_hinkley', 'hddm_w', 'hddm_a', 'adwin', 'ddm', 'eddm', 'kl_drift']"
         )
+
