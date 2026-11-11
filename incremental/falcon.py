@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader
 
 from incremental.base_strategy import IncrementalStrategy
 from training.losses import FocalLoss
+from data.sampler import compute_class_weights
 
 
 class Falcon(IncrementalStrategy):
@@ -52,12 +53,50 @@ class Falcon(IncrementalStrategy):
         self.temperature = float(temperature)
         self.grad_clip = float(grad_clip)
 
+        self.focal_gamma = float(focal_gamma)
+        self.focal_alpha = float(focal_alpha)
         self.focal_criterion = FocalLoss(alpha=focal_alpha, gamma=focal_gamma, reduction="mean")
         self.replay_buffer: Dict[int, List[Tuple[torch.Tensor, torch.Tensor]]] = defaultdict(list)
 
         self.old_model: Optional[nn.Module] = None
         self.new_teacher: Optional[nn.Module] = None
         self.old_num_classes: int = 0
+
+    def _train_new_class_teacher(self, train_loader: DataLoader) -> None:
+        """Train specialized New-Class Teacher M_new on current task data D_new (Paper 2 Sec. III-D2)."""
+        self.new_teacher = copy.deepcopy(self.model).to(self.device)
+        self.new_teacher.train()
+        for p in self.new_teacher.parameters():
+            p.requires_grad = True
+
+        teacher_opt = torch.optim.Adam(self.new_teacher.parameters(), lr=1e-3)
+        max_batches = 15
+        batches_seen = 0
+        for data, target in train_loader:
+            bx = data.to(self.device)
+            by = target.to(self.device)
+            new_mask = by >= self.old_num_classes
+            if not torch.any(new_mask):
+                continue
+            bx_new = bx[new_mask]
+            by_new = by[new_mask] - self.old_num_classes
+
+            teacher_opt.zero_grad()
+            logits = self.new_teacher(bx_new)
+            new_logits = logits[:, self.old_num_classes:self.n_classes_so_far]
+            if new_logits.size(1) == 0:
+                break
+            loss = F.cross_entropy(new_logits, by_new.clamp(0, new_logits.size(1) - 1))
+            loss.backward()
+            teacher_opt.step()
+
+            batches_seen += 1
+            if batches_seen >= max_batches:
+                break
+
+        self.new_teacher.eval()
+        for p in self.new_teacher.parameters():
+            p.requires_grad = False
 
     def before_task(self, task_id: int, n_new_classes: int) -> None:
         self.current_task = task_id
@@ -101,6 +140,21 @@ class Falcon(IncrementalStrategy):
         **kwargs,
     ) -> Dict[str, float]:
         self.model.to(self.device)
+
+        # Calibrate inverse class-frequency weights (Eq. 1) for Focal Loss (Eq. 5)
+        all_y = []
+        for _, target in train_loader:
+            all_y.append(target.detach().cpu())
+        if all_y:
+            y_cat = torch.cat(all_y, dim=0)
+            c_weights = compute_class_weights(y_cat, num_classes=self.n_classes_so_far).to(self.device)
+            self.focal_criterion = FocalLoss(alpha=c_weights, gamma=self.focal_gamma, reduction="mean")
+
+        if task_id > 0 and self.gamma_new > 0:
+            self._train_new_class_teacher(train_loader)
+        else:
+            self.new_teacher = None
+
         self.model.train()
         optimizer = self.optimizer_fn(self.model.parameters())
 
@@ -111,7 +165,7 @@ class Falcon(IncrementalStrategy):
             for data, target in train_loader:
                 data, target = data.to(self.device), target.to(self.device)
 
-                # Mix replay
+                # Mix replay: D_train = D_new U replay(D_old, delta)
                 if task_id > 0 and self.replay_buffer:
                     replay_size = int(data.size(0) * self.replay_ratio)
                     replay_data = self._sample_replay_batch(replay_size)
@@ -131,15 +185,34 @@ class Falcon(IncrementalStrategy):
 
                 l_cls = self.focal_criterion(logits, comb_y)
 
+                # Historical Teacher Distillation L_old (Eq. 22)
                 l_old = torch.tensor(0.0, device=self.device)
                 if task_id > 0 and self.old_model is not None and self.old_num_classes > 0:
                     with torch.no_grad():
                         old_logits = self.old_model(comb_x)
                     p_old = F.softmax(old_logits[:, :self.old_num_classes] / self.temperature, dim=1)
                     log_q_s_old = F.log_softmax(logits[:, :self.old_num_classes] / self.temperature, dim=1)
-                    l_old = (self.temperature ** 2) * F.kl_div(log_q_s_old, p_old, reduction="batchmean")
+                    l_old = (self.temperature ** 2) * F.kl_div(log_q_s_old, p_old, reduction="batchmean").clamp(min=0.0)
 
-                loss = self.alpha_cls * l_cls + self.beta_old * l_old
+                # New-Class Teacher Distillation L_new (Eq. 23)
+                l_new = torch.tensor(0.0, device=self.device)
+                if (
+                    task_id > 0
+                    and self.new_teacher is not None
+                    and self.gamma_new > 0
+                    and logits.size(1) > self.old_num_classes
+                ):
+                    with torch.no_grad():
+                        new_t_logits = self.new_teacher(comb_x)
+                    t_slice = new_t_logits[:, self.old_num_classes:logits.size(1)]
+                    s_slice = logits[:, self.old_num_classes:]
+                    if t_slice.size(1) > 0 and t_slice.size(1) == s_slice.size(1):
+                        p_new = F.softmax(t_slice / self.temperature, dim=1)
+                        log_q_s_new = F.log_softmax(s_slice / self.temperature, dim=1)
+                        l_new = (self.temperature ** 2) * F.kl_div(log_q_s_new, p_new, reduction="batchmean").clamp(min=0.0)
+
+                # Total Dual-Teacher Distillation Loss (Eq. 24)
+                loss = self.alpha_cls * l_cls + self.beta_old * l_old + self.gamma_new * l_new
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
                 optimizer.step()

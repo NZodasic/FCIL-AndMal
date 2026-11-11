@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 
 from incremental.base_strategy import IncrementalStrategy
 from utils.device import resolve_device
-from federated.drift.detectors import BaseDriftDetector, PageHinkleyDetector
+from federated.drift.detectors import BaseDriftDetector, PageHinkleyDetector, KLDriftDetector
 from federated.drift.normalizer import DriftScoreNormalizer
 
 
@@ -42,6 +42,9 @@ class FLClient:
         beta: float = 0.9,
         lambda1: float = 0.1,
         lambda2: float = 0.1,
+        divergence_metric: str = 'l2',
+        dp_sigma: float = 0.0,
+        dp_clip_norm: float = 1.0,
     ):
         """Initialize FL Client.
 
@@ -50,12 +53,15 @@ class FLClient:
             model: Local model.
             strategy: Incremental learning strategy.
             device: Device for training.
-            drift_detector: Optional BaseDriftDetector (ADWIN, DDM, EDDM, HDDM).
+            drift_detector: Optional BaseDriftDetector (ADWIN, DDM, EDDM, HDDM, PageHinkley, KLDrift).
             drift_normalizer: Optional DriftScoreNormalizer for z-score scaling.
             theta_base: Baseline local stability threshold.
             beta: Exponential decay factor for local threshold updates.
             lambda1: Weighting coefficient for drift score in local threshold.
             lambda2: Weighting coefficient for local validation error.
+            divergence_metric: Parameter divergence metric ('l2' or 'cosine').
+            dp_sigma: Optional Gaussian DP noise std (0.0 disables DP noise).
+            dp_clip_norm: L2 sensitivity clipping norm when dp_sigma > 0.
         """
         self.client_id = client_id
         self.model = model
@@ -74,6 +80,9 @@ class FLClient:
         self.beta = float(beta)
         self.lambda1 = float(lambda1)
         self.lambda2 = float(lambda2)
+        self.divergence_metric = str(divergence_metric).lower()
+        self.dp_sigma = float(dp_sigma)
+        self.dp_clip_norm = float(dp_clip_norm)
 
         # Paper: θ_base should be calibrated from median divergence during warm-up
         # (Patel et al. 2026, Sec. 4.4 "Hyperparameter configuration").
@@ -104,15 +113,45 @@ class FLClient:
         # Snapshot broadcasted global parameters
         self.initial_global_state = {k: v.cpu().clone() for k, v in state_dict.items()}
 
-    def compute_divergence(self, global_state: Optional[Dict[str, torch.Tensor]] = None) -> float:
-        """Compute relative L2 parameter divergence d_{c,t} from global model:
-            d_{c,t} = ||theta_{c,t}^{local} - theta_t||_2 / ||theta_t||_2
+    def compute_divergence(
+        self,
+        global_state: Optional[Dict[str, torch.Tensor]] = None,
+        metric: Optional[str] = None,
+    ) -> float:
+        """Compute parameter divergence d_{c,t} from global model (Patel et al., Sec. 4.3).
+
+        Supports:
+            - 'l2': relative Euclidean norm ||theta_{c,t}^{local} - theta_t||_2 / ||theta_t||_2
+            - 'cosine': cosine distance 1 - <theta_{c,t}^{local}, theta_t> / (||theta_{c,t}^{local}||_2 ||theta_t||_2)
         """
         ref_state = global_state if global_state is not None else self.initial_global_state
         if ref_state is None:
             return 0.0
 
+        mode = (metric or self.divergence_metric or "l2").lower()
         local_state = self.model.state_dict()
+
+        if mode == "cosine":
+            dot_sum = 0.0
+            loc_sq_sum = 0.0
+            ref_sq_sum = 0.0
+            for k, v_ref in ref_state.items():
+                if k in local_state and local_state[k].dtype.is_floating_point:
+                    v_loc = local_state[k].to(v_ref.device).float().reshape(-1)
+                    v_r = v_ref.float().reshape(-1)
+                    if v_loc.shape == v_r.shape:
+                        dot_sum += float(torch.dot(v_loc, v_r).item())
+                        loc_sq_sum += float(torch.sum(v_loc ** 2).item())
+                        ref_sq_sum += float(torch.sum(v_r ** 2).item())
+            denom = math.sqrt(loc_sq_sum) * math.sqrt(ref_sq_sum)
+            if denom <= 1e-12:
+                divergence = 0.0
+            else:
+                cos_sim = max(-1.0, min(1.0, dot_sum / denom))
+                divergence = float(max(0.0, 1.0 - cos_sim))
+            self.last_divergence = divergence
+            return divergence
+
         diff_sq_sum = 0.0
         ref_sq_sum = 0.0
 
@@ -128,6 +167,55 @@ class FLClient:
         divergence = math.sqrt(diff_sq_sum) / max(1e-9, denom)
         self.last_divergence = divergence
         return divergence
+
+    def apply_differential_privacy(
+        self,
+        sigma: Optional[float] = None,
+        clip_norm: Optional[float] = None,
+    ) -> float:
+        """Apply optional Gaussian Differential Privacy perturbation (Patel et al., Sec. 3 & 4).
+
+        Clips the L2 norm of local parameter updates Delta_theta_{c,t} to C = clip_norm,
+        adds Gaussian noise N(0, sigma^2 C^2 I) to model updates, and perturbs the
+        scalar drift score s_{c,t} within [0, 1].
+
+        Returns:
+            Perturbed drift score s_{c,t}.
+        """
+        dp_std = self.dp_sigma if sigma is None else float(sigma)
+        c_norm = self.dp_clip_norm if clip_norm is None else float(clip_norm)
+        if dp_std <= 0.0:
+            return float(self.last_drift_score)
+
+        local_state = self.model.state_dict()
+        if self.initial_global_state is not None:
+            total_sq = 0.0
+            deltas: Dict[str, torch.Tensor] = {}
+            for k, v_loc in local_state.items():
+                if k in self.initial_global_state and v_loc.dtype.is_floating_point:
+                    v_ref = self.initial_global_state[k].to(v_loc.device)
+                    if v_loc.shape == v_ref.shape:
+                        d = (v_loc - v_ref).float()
+                        deltas[k] = d
+                        total_sq += float(torch.sum(d ** 2).item())
+            total_norm = math.sqrt(total_sq)
+            scale = min(1.0, c_norm / max(1e-9, total_norm)) if c_norm > 0 else 1.0
+            noise_std = dp_std * (c_norm if c_norm > 0 else 1.0)
+
+            noisy_state = {}
+            for k, v_loc in local_state.items():
+                if k in deltas:
+                    v_ref = self.initial_global_state[k].to(v_loc.device).float()
+                    clipped_delta = deltas[k] * scale
+                    noise = torch.randn_like(clipped_delta) * noise_std
+                    noisy_state[k] = (v_ref + clipped_delta + noise).to(dtype=v_loc.dtype)
+                else:
+                    noisy_state[k] = v_loc
+            self.model.load_state_dict(noisy_state)
+
+        noisy_score = float(self.last_drift_score) + float(np.random.normal(0.0, dp_std))
+        self.last_drift_score = float(min(1.0, max(0.0, noisy_score)))
+        return self.last_drift_score
 
     def record_warmup_divergence(self) -> None:
         """Record the current divergence into the warmup accumulator.
@@ -251,6 +339,23 @@ class FLClient:
                 'drift_adapted': True,
             }
 
+        # Falcon KL/JS feature-distribution drift path (Yang et al., IEEE TCE 2026, Eqs. 19-21):
+        # Evaluates sliding-window histogram KL-divergence and JS-divergence on input features X.
+        if isinstance(self.drift_detector, KLDriftDetector):
+            s_ct = float(self.evaluate_covariate_drift(train_loader))
+            self.last_drift_score = s_ct
+            return {
+                'drift_score': float(s_ct),
+                'raw_drift_statistic': float(s_ct),
+                'js_divergence': float(getattr(self.drift_detector, 'last_js', 0.0)),
+                'divergence': float(divergence),
+                'local_threshold': float(self.drift_detector.tau_kl),
+                'drift_detected': bool(self.drift_detector.drift_detected),
+                'warning_detected': bool(self.drift_detector.warning_detected),
+                'drift_state': str(self.drift_detector.get_state()),
+                'drift_adapted': bool(self.drift_detector.drift_detected),
+            }
+
         # Collect sample predictions to update streaming drift detector (FL-MalDrift)
         preds_list: List[int] = []
         targets_list: List[int] = []
@@ -297,6 +402,10 @@ class FLClient:
             self.apply_local_adaptation(shrink_factor=0.5)
             adapted = True
 
+        # Optional Differential Privacy Gaussian perturbation before transmission (Patel et al., Sec. 3 & 4)
+        if self.dp_sigma > 0.0:
+            s_ct = self.apply_differential_privacy()
+
         return {
             'drift_score': float(s_ct),
             'raw_drift_statistic': float(raw_z),
@@ -306,6 +415,7 @@ class FLClient:
             'warning_detected': bool(warning_detected),
             'drift_state': str(state),
             'drift_adapted': bool(adapted),
+            'dp_applied': bool(self.dp_sigma > 0.0),
         }
 
     def local_train(

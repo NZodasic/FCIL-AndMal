@@ -230,3 +230,40 @@ class TestFalconMethodIntegration:
         metrics = adapter.train_task(loader, task_id=0, n_epochs=1)
         assert "loss" in metrics
         assert metrics["loss"] > 0.0
+
+    def test_falcon_incremental_strategy_dual_teacher_and_kl_features(self):
+        from incremental.falcon import Falcon
+
+        cfg = ModelConfig(backbone_type="falcon", input_dim=20, latent_dim=32, classes_per_task=3, num_total_classes=6)
+        model = FCILNet(cfg)
+        strat = Falcon(
+            model=model,
+            optimizer_fn=lambda p: torch.optim.Adam(p, lr=1e-3),
+            device="cpu",
+            buffer_size_per_class=4,
+            gamma_new=0.2,
+        )
+        x0 = torch.randn(16, 20)
+        y0 = torch.randint(0, 3, (16,))
+        loader0 = DataLoader(TensorDataset(x0, y0), batch_size=8)
+        strat.before_task(0, 3)
+        m0 = strat.train_task(loader0, task_id=0, n_epochs=1)
+        strat.after_task(0, train_loader=loader0)
+        assert m0["loss"] > 0.0
+
+        model.expand_classes(3)
+        x1 = torch.randn(16, 20)
+        y1 = torch.randint(3, 6, (16,))
+        loader1 = DataLoader(TensorDataset(x1, y1), batch_size=8)
+        strat.before_task(1, 3)
+        m1 = strat.train_task(loader1, task_id=1, n_epochs=1)
+        assert strat.new_teacher is not None
+        assert m1["loss"] > 0.0
+
+        # Also verify KLDriftDetector.update_features on 2D feature matrices
+        det = KLDriftDetector(window_size=20, tau_kl=0.10, tau_js=0.08, n_bins=10)
+        rng = np.random.default_rng(7)
+        kl0, d0, _ = det.update_features(rng.normal(0.0, 1.0, size=(20, 8)))
+        assert kl0 == 0.0 and not d0
+        kl1, d1, _ = det.update_features(rng.normal(5.0, 1.0, size=(20, 8)))
+        assert kl1 > 0.10 and d1

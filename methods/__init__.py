@@ -21,8 +21,13 @@ def build_il_method(config: ILConfig) -> BaseILMethod:
         return FineTuneMethod()
     elif m_name == "joint":
         return JointCumulativeMethod()
-    elif m_name == "ewc":
-        return EWCMethod(ewc_lambda=config.ewc_lambda)
+    elif m_name in ("ewc", "ewcdr", "fl_cl_ids"):
+        return EWCMethod(
+            ewc_lambda=getattr(config, "ewc_lambda", 100.0),
+            gamma=getattr(config, "fisher_gamma", 0.9),
+            lambda_min=getattr(config, "lambda_min", 10.0),
+            lambda_max=getattr(config, "lambda_max", 1000.0),
+        )
     elif m_name == "lwf":
         return LwFMethod(temperature=config.lwf_temperature, alpha=config.lwf_alpha)
     elif m_name == "replay":

@@ -21,7 +21,7 @@ from config import (
     get_batch_size_for_mode,
 )
 from models.fcil_model import FCILNet
-from federated.aggregators import FedAvgAggregator, FedNovaAggregator
+from federated.aggregators import FedAvgAggregator, FedNovaAggregator, FedSGDAggregator, build_aggregator
 from federated.server import FLServer
 from federated.prototype_manager import GlobalPrototypeManager
 from training.checkpoint import CheckpointManager
@@ -63,6 +63,20 @@ class TestFederated(unittest.TestCase):
         new_state = agg.aggregate(global_state, [client1_state, client2_state], [100, 200], [5, 10])
         self.assertTrue("w" in new_state)
         self.assertEqual(new_state["w"].shape, (2,))
+
+    def test_fedsgd_aggregation(self):
+        agg = build_aggregator("fedsgd", server_lr=1.0)
+        self.assertIsInstance(agg, FedSGDAggregator)
+        global_state = {"w": torch.tensor([1.0, 1.0]), "b": torch.tensor([0.0])}
+        client1_state = {"w": torch.tensor([2.0, 2.0]), "b": torch.tensor([1.0])}
+        client2_state = {"w": torch.tensor([4.0, 4.0]), "b": torch.tensor([3.0])}
+
+        # Pseudo-gradients: c1 - g = [1, 1], c2 - g = [3, 3]
+        # Weights: 0.25, 0.75 -> weighted pseudo-grad = [2.5, 2.5]
+        # Updated: g + 1.0 * [2.5, 2.5] = [3.5, 3.5]
+        new_state = agg.aggregate(global_state, [client1_state, client2_state], [100, 300])
+        self.assertTrue(torch.allclose(new_state["w"], torch.tensor([3.5, 3.5])))
+        self.assertTrue(torch.allclose(new_state["b"], torch.tensor([2.5])))
 
     def test_prototype_manager(self):
         mgr = GlobalPrototypeManager()

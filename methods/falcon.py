@@ -216,7 +216,7 @@ class FalconMethod(BaseILMethod):
             log_q_s_old = F.log_softmax(z_s[:, :self.old_num_classes] / self.temperature, dim=1)
 
             # KL divergence: KL(p_old || q_s_old) = sum(p_old * (log p_old - log q_s_old))
-            l_old = (self.temperature ** 2) * F.kl_div(log_q_s_old, p_old, reduction="batchmean")
+            l_old = (self.temperature ** 2) * F.kl_div(log_q_s_old, p_old, reduction="batchmean").clamp(min=0.0)
 
         # 5. New-Class Teacher Distillation (Eq. 23)
         l_new = torch.tensor(0.0, device=device)
@@ -228,7 +228,7 @@ class FalconMethod(BaseILMethod):
             p_new = F.softmax(z_new_full[:, self.old_num_classes:] / self.temperature, dim=1)
             log_q_s_new = F.log_softmax(z_s[:, self.old_num_classes:] / self.temperature, dim=1)
 
-            l_new = (self.temperature ** 2) * F.kl_div(log_q_s_new, p_new, reduction="batchmean")
+            l_new = (self.temperature ** 2) * F.kl_div(log_q_s_new, p_new, reduction="batchmean").clamp(min=0.0)
 
         # 6. Total Combined Loss (Eq. 24)
         total_loss = self.alpha_cls * l_cls + self.beta_old * l_old + self.gamma_new * l_new

@@ -31,23 +31,39 @@ class EWC(IncrementalStrategy):
         optimizer_fn,
         device: str = 'cuda',
         ewc_lambda: float = 1000.0,
+        gamma: float = 0.9,
+        lambda_min: float = 10.0,
+        lambda_max: float = 1000.0,
         **kwargs
     ):
-        """Initialize EWC.
+        """Initialize EWC / FL-CL-IDS Online EWC.
 
         Args:
             model: Neural network model.
             optimizer_fn: Optimizer function.
             device: Device for training.
             ewc_lambda: Regularization strength for EWC penalty.
+            gamma: Online Fisher consolidation decay factor (Eq. 14, Khreasat et al. 2026).
+            lambda_min: Minimum adaptive EWC regularization multiplier (Eq. 5).
+            lambda_max: Maximum adaptive EWC regularization multiplier (Eq. 5).
             **kwargs: Additional arguments.
         """
         super().__init__(model, optimizer_fn, device, **kwargs)
-        self.ewc_lambda = ewc_lambda
+        self.ewc_lambda = float(ewc_lambda)
+        self.base_lambda = float(ewc_lambda)
+        self.gamma = float(gamma)
+        self.lambda_min = float(lambda_min)
+        self.lambda_max = float(lambda_max)
 
         # Store Fisher Information and optimal params for each task
         self.fisher_matrices: Dict[int, Dict[str, torch.Tensor]] = {}
         self.optimal_params: Dict[int, Dict[str, torch.Tensor]] = {}
+        # Online consolidated Fisher and optimal params (FL-CL-IDS Eq. 14)
+        self.fisher_dict: Dict[str, torch.Tensor] = {}
+
+    def set_adaptive_lambda(self, adaptive_lambda: float) -> None:
+        """Update EWC penalty multiplier dynamically from drift controller (Eq. 5)."""
+        self.ewc_lambda = float(max(self.lambda_min, min(self.lambda_max, adaptive_lambda)))
 
     def before_task(self, task_id: int, n_new_classes: int) -> None:
         """Prepare for new task.
@@ -67,13 +83,28 @@ class EWC(IncrementalStrategy):
         super().before_task(task_id, n_new_classes)
 
     def after_task(self, task_id: int, train_loader: DataLoader, **kwargs) -> None:
-        """Compute Fisher Information after training.
+        """Compute Fisher Information after training and update online Fisher (Eq. 14).
 
         Args:
             task_id: Current task ID.
             train_loader: DataLoader for computing Fisher.
         """
-        self.fisher_matrices[task_id] = self._compute_fisher(train_loader)
+        current_fisher = self._compute_fisher(train_loader)
+        self.fisher_matrices[task_id] = current_fisher
+        # Online EWC consolidation: F_i^{(t)} = gamma * F_i^{(t-1)} + hat{F}_i^{(t)} (Eq. 14)
+        for name, f_val in current_fisher.items():
+            f_cpu = f_val.detach().cpu().clone()
+            if name in self.fisher_dict:
+                old_f = self.fisher_dict[name]
+                if old_f.shape == f_cpu.shape:
+                    self.fisher_dict[name] = self.gamma * old_f + f_cpu
+                else:
+                    new_f = f_cpu.clone()
+                    slices = tuple(slice(0, min(s1, s2)) for s1, s2 in zip(old_f.shape, new_f.shape))
+                    new_f[slices] = self.gamma * old_f[slices] + new_f[slices]
+                    self.fisher_dict[name] = new_f
+            else:
+                self.fisher_dict[name] = f_cpu
 
     def _compute_fisher(
         self,

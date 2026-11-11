@@ -53,34 +53,43 @@ os.makedirs(PAPER_FIG_DIR, exist_ok=True)
 
 METHOD_COLORS = {
     "MALFSIL": "#1b9e77",       # Teal Green (Proposed 3-Tier)
+    "FALCON": "#008080",        # Deep Cyan (Falcon)
+    "MALDRIFT": "#984ea3",      # Violet (FL-MalDrift)
     "REPLAY": "#386cb0",        # Deep Blue
     "MES": "#386cb0",           # Deep Blue
     "EWC": "#d95f02",           # Dark Orange (FL-CL-IDS / EWCDR)
     "EWCDR": "#d95f02",         # Dark Orange
     "SPCIL": "#e7298a",         # Magenta / Rose
     "FEDNOVA": "#7570b3",       # Purple
+    "FEDSGD": "#4daf4a",        # Green
     "FEDAVG": "#66a61e",        # Olive Green
     "FINETUNE": "#a6761d",      # Brown
 }
 
 METHOD_MARKERS = {
     "MALFSIL": "o",
+    "FALCON": "p",
+    "MALDRIFT": "*",
     "REPLAY": "s",
     "MES": "s",
     "EWC": "D",
     "EWCDR": "D",
     "SPCIL": "^",
     "FEDNOVA": "P",
+    "FEDSGD": "<",
     "FEDAVG": "v",
     "FINETUNE": "X",
 }
 
 METHOD_LABELS = {
     "MALFSIL": "MALFSIL (Replay+KD+Proto)",
+    "FALCON": "Falcon (Dual-KD+Focal+KL)",
+    "MALDRIFT": "FL-MalDrift (HDDM+Quarantine)",
     "MES": "MES (Replay)",
     "EWC": "FL-CL-IDS / EWCDR (Drift-Aware)",
     "SPCIL": "SPCIL (Self-Paced)",
     "FEDNOVA": "FedNova",
+    "FEDSGD": "FedSGD",
     "FEDAVG": "FedAvg",
     "FINETUNE": "FineTune",
 }

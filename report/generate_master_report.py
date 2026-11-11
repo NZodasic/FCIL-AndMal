@@ -42,8 +42,11 @@ METHOD_GROUPS = {
     "replay": "Replay-based CIL (MES)",
     "spcil": "Self-Paced Curriculum CIL",
     "malfsil": "Proposed Multi-Tier FCIL (Replay+KD+Proto)",
+    "falcon": "Dual-Teacher KD + Focal + KL-Drift FCIL (Falcon)",
+    "maldrift": "Drift-Aware Adaptive Admission FL (FL-MalDrift)",
     "fedavg": "Federated Baseline (No IL)",
     "fednova": "Federated Normalized Baseline (No IL)",
+    "fedsgd": "Federated SGD Baseline (No IL)",
 }
 
 
@@ -187,6 +190,10 @@ def load_all_experiments():
             method = "unknown"
             if "malfsil" in bname_lower:
                 method = "malfsil"
+            elif "falcon" in bname_lower:
+                method = "falcon"
+            elif "maldrift" in bname_lower:
+                method = "maldrift"
             elif "ewc" in bname_lower:
                 method = "ewc"
             elif "replay" in bname_lower or "mes" in bname_lower:
@@ -195,6 +202,8 @@ def load_all_experiments():
                 method = "spcil"
             elif "fednova" in bname_lower:
                 method = "fednova"
+            elif "fedsgd" in bname_lower:
+                method = "fedsgd"
             elif "fedavg" in bname_lower:
                 method = "fedavg"
             elif "finetune" in bname_lower:

@@ -18,6 +18,8 @@ from methods import (
     ReplayHerdingMethod,
     SPCILMethod,
     MALFSILMethod,
+    FalconMethod,
+    build_il_method,
 )
 
 
@@ -127,6 +129,7 @@ class TestILMethods(unittest.TestCase):
             ReplayHerdingMethod(buffer_size_per_class=2, use_herding=True),
             SPCILMethod(lambda_init=0.5, lambda_step=0.1),
             MALFSILMethod(buffer_size_per_class=2, distill_weight=1.0, proto_weight=0.5),
+            FalconMethod(buffer_size_per_class=2, replay_ratio=0.2, gamma_new=0.2),
         ]
         for method in methods:
             model = FCILNet(self.cfg)

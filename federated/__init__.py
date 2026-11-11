@@ -2,7 +2,7 @@
 
 from federated.client import FLClient
 from federated.server import FLServer
-from federated.aggregators.base import BaseAggregator, FedAvg, FedNova
+from federated.aggregators.base import BaseAggregator, FedAvg, FedNova, FedSGD
 
 __all__ = [
     'FLClient',
@@ -10,4 +10,5 @@ __all__ = [
     'BaseAggregator',
     'FedAvg',
     'FedNova',
+    'FedSGD',
 ]

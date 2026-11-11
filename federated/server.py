@@ -14,7 +14,7 @@ import torch.nn as nn
 from federated.client import FLClient
 from federated.aggregators.base import BaseAggregator, FedAvg
 from federated.drift.controller import ServerDriftController, AdaptiveLambdaController
-from federated.drift.detectors import PageHinkleyDetector
+from federated.drift.detectors import PageHinkleyDetector, KLDriftDetector
 from config import ID2LABEL
 from utils.device import resolve_device, clear_device_cache
 from utils.metrics import format_classification_metrics, format_confusion_matrix
@@ -98,7 +98,7 @@ class FLServer:
             tau_low = getattr(drift_cfg, 'tau_low', 0.05) if drift_cfg else 0.05
             tau_high = getattr(drift_cfg, 'tau_high', 0.30) if drift_cfg else 0.30
             rho_min = getattr(drift_cfg, 'rho_min', 0.50) if drift_cfg else 0.50
-            if il_cfg is not None and getattr(il_cfg, 'method_name', '') in ('ewc', 'ewcdr'):
+            if il_cfg is not None and getattr(il_cfg, 'method_name', '') in ('ewc', 'ewcdr', 'fl_cl_ids'):
                 self.adaptive_lambda_controller = AdaptiveLambdaController(
                     lambda_min=lam_min,
                     lambda_max=lam_max,
@@ -344,6 +344,13 @@ class FLServer:
                 return True
         return False
 
+    def _is_falcon_drift_active(self, client_ids: List[int]) -> bool:
+        """Return True if KLDriftDetector (Falcon, Yang et al. 2026) is active on clients."""
+        for cid in client_ids:
+            if cid in self.clients and isinstance(self.clients[cid].drift_detector, KLDriftDetector):
+                return True
+        return False
+
     def run_round(
         self,
         client_ids: List[int],
@@ -427,7 +434,11 @@ class FLServer:
                 client_scores[cid] = float(metrics.get('drift_score', 0.0))
 
             admitted_client_ids = list(active_scheduled)
-            if self.enable_drift_filtering and self.drift_controller is not None:
+            if (
+                self.enable_drift_filtering
+                and self.drift_controller is not None
+                and not self._is_falcon_drift_active(active_scheduled)
+            ):
                 current_round_idx = len(self.history) + 1
                 admitted_client_ids, tau_t, drift_round_info = self.drift_controller.step(
                     round_idx=current_round_idx,
@@ -443,6 +454,18 @@ class FLServer:
                             client.record_warmup_divergence()
                         else:
                             client.calibrate_theta_base()
+            elif self._is_falcon_drift_active(active_scheduled):
+                n_drifted = sum(
+                    1 for m in client_metrics if m.get('drift_detected', False)
+                )
+                drift_round_info = {
+                    'detector': 'kl_drift',
+                    'n_drifted_clients': n_drifted,
+                    'mean_kl_divergence': (
+                        float(sum(client_scores.values()) / len(client_scores))
+                        if client_scores else 0.0
+                    ),
+                }
 
         # Extract weights and step counts for admitted clients
         admitted_weights = [client_weights_map[cid] for cid in admitted_client_ids]

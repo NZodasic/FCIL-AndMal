@@ -364,24 +364,37 @@ class KLDriftDetector(BaseDriftDetector):
         warning_ratio: float = 0.7,
         num_bins: int = 10,
         eps: float = 1e-4,
+        n_bins: Optional[int] = None,
+        tau_kl: Optional[float] = None,
+        tau_js: Optional[float] = None,
+        **kwargs,
     ):
         super().__init__(name="KLDrift")
         self.window_size = int(window_size)
-        self.threshold = float(threshold)
-        self.warning_threshold = float(threshold * warning_ratio)
-        self.num_bins = int(num_bins)
+        eff_threshold = float(tau_kl) if tau_kl is not None else float(threshold)
+        self.threshold = eff_threshold
+        self.tau_kl = eff_threshold
+        self.warning_threshold = (
+            float(tau_js) if tau_js is not None else float(eff_threshold * warning_ratio)
+        )
+        self.tau_js = self.warning_threshold
+        self.num_bins = int(n_bins) if n_bins is not None else int(num_bins)
         self.eps = float(eps)
 
         self.ref_window: List[float] = []
         self.cur_window: List[float] = []
         self.ref_hist: Optional[np.ndarray] = None
+        self.ref_features: Optional[np.ndarray] = None
         self.js_divergence: float = 0.0
+        self.last_js: float = 0.0
 
     def reset_statistics(self) -> None:
         self.ref_window = []
         self.cur_window = []
         self.ref_hist = None
+        self.ref_features = None
         self.js_divergence = 0.0
+        self.last_js = 0.0
 
     def _compute_distribution(self, data: np.ndarray, bins: np.ndarray) -> np.ndarray:
         """Compute normalized probability distribution with Laplace smoothing."""
@@ -433,6 +446,7 @@ class KLDriftDetector(BaseDriftDetector):
             js_div = self._compute_js(p_ref, q_cur)
             self.raw_statistic = float(kl_div)
             self.js_divergence = float(js_div)
+            self.last_js = float(js_div)
 
             if kl_div > self.threshold:
                 self.drift_detected = True
@@ -444,6 +458,64 @@ class KLDriftDetector(BaseDriftDetector):
                 self.warning_detected = True
 
         return self.drift_detected, self.warning_detected
+
+    def update_features(self, features: np.ndarray) -> Tuple[float, bool, bool]:
+        """Evaluate histogram KL & JS divergence across d-dimensional features (Yang et al. 2026, Eqs. 19-21).
+
+        Args:
+            features: 2D array of shape (N, d) containing local input feature vectors.
+
+        Returns:
+            Tuple of (kl_divergence, drift_detected, warning_detected).
+        """
+        X = np.asarray(features, dtype=np.float64)
+        if X.ndim == 1:
+            X = X.reshape(-1, 1)
+        n_samples, d = X.shape
+        if n_samples == 0 or d == 0:
+            return 0.0, False, False
+
+        self.total_samples += n_samples
+        self.drift_detected = False
+        self.warning_detected = False
+
+        if self.ref_features is None or self.ref_features.shape[1] != d:
+            self.ref_features = X[: self.window_size].copy()
+            self.raw_statistic = 0.0
+            self.js_divergence = 0.0
+            self.last_js = 0.0
+            return 0.0, False, False
+
+        kl_vals = []
+        js_vals = []
+        for col in range(d):
+            ref_col = self.ref_features[:, col]
+            cur_col = X[:, col]
+            lo = min(float(np.min(ref_col)), float(np.min(cur_col)))
+            hi = max(float(np.max(ref_col)), float(np.max(cur_col)))
+            if hi <= lo + 1e-12:
+                kl_vals.append(0.0)
+                js_vals.append(0.0)
+                continue
+            bins = np.linspace(lo, hi, self.num_bins + 1)
+            p_ref = self._compute_distribution(ref_col, bins)
+            q_cur = self._compute_distribution(cur_col, bins)
+            kl_vals.append(self._compute_kl(p_ref, q_cur))
+            js_vals.append(self._compute_js(p_ref, q_cur))
+
+        avg_kl = float(np.mean(kl_vals)) if kl_vals else 0.0
+        avg_js = float(np.mean(js_vals)) if js_vals else 0.0
+        self.raw_statistic = avg_kl
+        self.js_divergence = avg_js
+        self.last_js = avg_js
+
+        if avg_kl > self.tau_kl or avg_js > self.tau_js:
+            self.drift_detected = True
+            self.ref_features = X[: self.window_size].copy()
+        elif avg_kl > self.warning_threshold:
+            self.warning_detected = True
+
+        return avg_kl, self.drift_detected, self.warning_detected
 
     def update_batch(self, preds: np.ndarray, targets: np.ndarray) -> Tuple[bool, bool]:
         """Update detector with batch predictions and targets."""

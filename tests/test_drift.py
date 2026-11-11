@@ -618,6 +618,38 @@ class TestFLCLIDS(unittest.TestCase):
         self.assertIn(2, active)
         self.assertEqual(info["n_recalled"], 2)
 
+    def test_cosine_divergence_and_differential_privacy(self):
+        """Test FL-MalDrift cosine divergence and optional Gaussian DP perturbation (Patel et al. 2026)."""
+        model = nn.Sequential(nn.Linear(10, 4, bias=False))
+        strategy = DummyStrategy(model)
+        client = FLClient(
+            client_id=1,
+            model=model,
+            strategy=strategy,
+            device="cpu",
+            divergence_metric="cosine",
+            dp_sigma=0.05,
+            dp_clip_norm=0.5,
+        )
+        with torch.no_grad():
+            model[0].weight.fill_(1.0)
+        global_state = {k: v.clone() for k, v in model.state_dict().items()}
+        client.set_model_state(global_state)
+
+        # Identical weights -> cosine divergence = 0.0
+        self.assertAlmostEqual(client.compute_divergence(metric="cosine"), 0.0, places=5)
+
+        # Negated weights -> cosine similarity = -1.0 -> cosine divergence = 2.0
+        with torch.no_grad():
+            model[0].weight.fill_(-1.0)
+        self.assertAlmostEqual(client.compute_divergence(metric="cosine"), 2.0, places=4)
+
+        # Apply DP noise and clipping
+        client.last_drift_score = 0.5
+        noisy_score = client.apply_differential_privacy()
+        self.assertGreaterEqual(noisy_score, 0.0)
+        self.assertLessEqual(noisy_score, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

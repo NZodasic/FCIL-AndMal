@@ -67,6 +67,7 @@ CENTRALIZED_EXPERIMENTS: List[Tuple] = [
     ("Centralized_MES",      "centralized", "replay",   None,      {"buffer_size": 20}),
     ("Centralized_SPCIL",    "centralized", "spcil",    None,      {}),
     ("Centralized_MALFSIL",  "centralized", "malfsil",  None,      {}),
+    ("Centralized_Falcon",   "centralized", "falcon",   None,      {"buffer_size": 20}),
 ]
 
 FEDERATED_EXPERIMENTS: List[Tuple] = [
@@ -76,6 +77,9 @@ FEDERATED_EXPERIMENTS: List[Tuple] = [
     ("FL_MES",              "federated",   "replay",   "fedavg",  {"buffer_size": 20}),
     ("FL_SPCIL",            "federated",   "spcil",    "fedavg",  {}),
     ("FL_MALFSIL",          "federated",   "malfsil",  "fedavg",  {}),
+    ("FL_Falcon",           "federated",   "falcon",   "fedavg",  {"buffer_size": 20, "enable_drift": True, "drift_detector": "kl_drift"}),
+    ("FL_MalDrift",         "federated",   "finetune", "fedsgd",  {"enable_drift": True, "drift_detector": "hddm_a"}),
+    ("FL_MalDrift_FedAvg",  "federated",   "finetune", "fedavg",  {"enable_drift": True, "drift_detector": "hddm_a"}),
 ]
 
 # Legacy alias for backward compatibility
@@ -357,7 +361,7 @@ def parse_args() -> argparse.Namespace:
                    help="Client count scenarios to run (e.g. --clients 20 50 or --clients 20)")
     p.add_argument("--feature_type",     type=str, choices=["dynamic", "static", "fused"], default="dynamic",
                    help="Feature representation type: dynamic (141d), static (300d), or fused multi-modal (441d)")
-    p.add_argument("--backbone",         type=str, choices=["hybrid_tcn_cnn", "cnn1d", "tcn", "mlp", "fused"], default=None,
+    p.add_argument("--backbone",         type=str, choices=["hybrid_tcn_cnn", "cnn1d", "tcn", "mlp", "fused", "cnn_bilstm_attention", "falcon"], default=None,
                    help="Neural backbone architecture (auto-selects based on feature_type if None)")
     p.add_argument("--raw_root",        default="./raw_data",          help="Raw CIC-AndMal-2020 directory")
     p.add_argument("--prepared_dir",    default="./prepared_data",     help="Stage 1 prepared data dir")

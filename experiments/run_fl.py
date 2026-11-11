@@ -34,9 +34,10 @@ from incremental.lwf import LwF
 from incremental.replay import Replay
 from incremental.spcil import SPCIL
 from incremental.malfsil import MALFSIL
+from incremental.falcon import Falcon
 from federated.client import FLClient
 from federated.server import FLServer
-from federated.aggregators.base import FedAvg, FedNova
+from federated.aggregators.base import FedAvg, FedNova, FedSGD
 from training.checkpoint import CheckpointManager
 from utils.logging import ExperimentLogger
 from training.evaluator import Evaluator
@@ -54,9 +55,9 @@ def parse_args():
                        choices=['static', 'dynamic', 'fused'])
     parser.add_argument('--n_clients', type=int, default=20)
     parser.add_argument('--strategy', type=str, default='finetune',
-                       choices=['finetune', 'joint', 'ewc', 'lwf', 'replay', 'spcil', 'malfsil'])
+                       choices=['finetune', 'joint', 'ewc', 'lwf', 'replay', 'spcil', 'malfsil', 'falcon'])
     parser.add_argument('--aggregator', type=str, default='fedavg',
-                       choices=['fedavg', 'fednova'])
+                       choices=['fedavg', 'fednova', 'fedsgd'])
 
     # Training settings
     parser.add_argument('--n_tasks', type=int, default=5)
@@ -135,6 +136,7 @@ def create_strategy(strategy_name: str, model, lr: float, device: str):
         'replay': Replay,
         'spcil': SPCIL,
         'malfsil': MALFSIL,
+        'falcon': Falcon,
     }
 
     if strategy_name not in strategies:
@@ -147,7 +149,7 @@ def create_aggregator(aggregator_name: str):
     """Create aggregation algorithm.
 
     Args:
-        aggregator_name: 'fedavg' or 'fednova'.
+        aggregator_name: 'fedavg', 'fednova', or 'fedsgd'.
 
     Returns:
         Aggregator instance.
@@ -156,6 +158,8 @@ def create_aggregator(aggregator_name: str):
         return FedAvg()
     elif aggregator_name == 'fednova':
         return FedNova()
+    elif aggregator_name == 'fedsgd':
+        return FedSGD()
     else:
         raise ValueError(f"Unknown aggregator: {aggregator_name}")
 

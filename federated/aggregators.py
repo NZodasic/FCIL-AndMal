@@ -115,27 +115,73 @@ class FedNovaAggregator(BaseAggregator):
         return new_global_state
 
 
+class FedSGDAggregator(BaseAggregator):
+    """Federated Stochastic Gradient Descent (FedSGD) Aggregator."""
+
+    def __init__(self, server_lr: float = 1.0):
+        super().__init__(name="fedsgd")
+        self.server_lr = float(server_lr)
+
+    def aggregate(
+        self,
+        global_state: Dict[str, torch.Tensor],
+        client_states: List[Dict[str, torch.Tensor]],
+        client_sample_counts: List[int],
+        client_steps: Optional[List[int]] = None,
+    ) -> Dict[str, torch.Tensor]:
+        total_samples = sum(client_sample_counts)
+        if total_samples == 0 or len(client_states) == 0:
+            return copy.deepcopy(global_state)
+
+        p_weights = [count / total_samples for count in client_sample_counts]
+        new_global_state: Dict[str, torch.Tensor] = {}
+
+        for key in global_state.keys():
+            if key not in client_states[0] or not global_state[key].is_floating_point():
+                new_global_state[key] = global_state[key].clone()
+                continue
+
+            w_0 = global_state[key].to(torch.float32)
+            pseudo_grad = torch.zeros_like(w_0)
+            for state, p_k in zip(client_states, p_weights):
+                w_k = state[key].to(w_0.device, dtype=torch.float32)
+                if w_k.shape == w_0.shape:
+                    pseudo_grad += p_k * (w_k - w_0)
+
+            w_new = w_0 + self.server_lr * pseudo_grad
+            new_global_state[key] = w_new.to(global_state[key].dtype)
+
+        return new_global_state
+
+
 # Class Aliases for compatibility
 FedAvg = FedAvgAggregator
 FedNova = FedNovaAggregator
+FedSGD = FedSGDAggregator
 
 
-def build_aggregator(aggregator_name: str) -> BaseAggregator:
+def build_aggregator(aggregator_name: str, **kwargs) -> BaseAggregator:
     """Factory builder for Federated Aggregators."""
     name = aggregator_name.lower()
     if name == "fedavg":
         return FedAvgAggregator()
     elif name == "fednova":
         return FedNovaAggregator()
+    elif name == "fedsgd":
+        return FedSGDAggregator(**kwargs)
     else:
-        raise ValueError(f"Unknown aggregator: {aggregator_name}. Choose 'fedavg' or 'fednova'.")
+        raise ValueError(
+            f"Unknown aggregator: {aggregator_name}. Choose 'fedavg', 'fednova', or 'fedsgd'."
+        )
 
 
 __all__ = [
     'BaseAggregator',
     'FedAvgAggregator',
     'FedNovaAggregator',
+    'FedSGDAggregator',
     'FedAvg',
     'FedNova',
+    'FedSGD',
     'build_aggregator',
 ]

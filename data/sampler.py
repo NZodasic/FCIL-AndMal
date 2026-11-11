@@ -150,3 +150,36 @@ def build_weighted_random_sampler(
 
     n_samples = num_samples if num_samples is not None else len(labels_arr)
     return WeightedRandomSampler(weights=weights_tensor, num_samples=n_samples, replacement=replacement)
+
+
+def compute_class_weights(
+    labels: Union[Sequence[int], np.ndarray, torch.Tensor],
+    num_classes: Optional[int] = None,
+) -> torch.Tensor:
+    """Compute normalized inverse-frequency class weights w_c = N / (C * N_c) (Falcon Eq. 1)."""
+    if isinstance(labels, torch.Tensor):
+        labels_arr = labels.detach().cpu().numpy()
+    else:
+        labels_arr = np.asarray(labels)
+
+    valid = labels_arr[labels_arr >= 0]
+    if len(valid) == 0:
+        c = num_classes if num_classes is not None and num_classes > 0 else 1
+        return torch.ones(c, dtype=torch.float32)
+
+    max_cls = int(np.max(valid)) + 1
+    c = max(max_cls, int(num_classes)) if num_classes is not None else max_cls
+    counts = np.bincount(valid.astype(np.int64), minlength=c).astype(np.float64)
+
+    total_n = float(len(valid))
+    active_c = float(max(1, np.sum(counts > 0)))
+    weights = np.ones(c, dtype=np.float64)
+    for idx in range(c):
+        if counts[idx] > 0:
+            weights[idx] = total_n / (active_c * counts[idx])
+
+    mean_w = float(np.mean(weights))
+    if mean_w > 0:
+        weights = weights / mean_w
+    return torch.tensor(weights, dtype=torch.float32)
+

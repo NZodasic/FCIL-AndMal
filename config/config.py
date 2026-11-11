@@ -236,6 +236,17 @@ class DriftConfig:
     rho_min: float = 0.50        # ρ_min — minimum client participation floor (Algorithm 1)
     fisher_gamma: float = 0.90   # γ — Online Fisher consolidation decay factor (Eq. 14)
 
+    # --- Falcon Histogram KL/JS Drift Detection (Yang et al., IEEE TCE 2026) ---
+    kl_window_size: int = 500    # w — sliding reference/test window size (Algorithm 2)
+    kl_n_bins: int = 20          # B — histogram bins per feature (Eq. 20)
+    tau_kl: float = 0.15         # τ_KL — KL-divergence drift alarm threshold (Eq. 20)
+    tau_js: float = 0.10         # τ_JS — Jensen-Shannon backup threshold (Eq. 21)
+
+    # --- FL-MalDrift Divergence Metric & Optional Differential Privacy (Patel et al., 2026) ---
+    divergence_metric: str = 'l2'  # 'l2' | 'cosine' parameter divergence metric (Sec. 4.3)
+    dp_sigma: float = 0.0        # σ — Gaussian DP noise std on client updates/scores (0.0 = off)
+    dp_clip_norm: float = 1.0    # C — L2 norm clipping threshold before Gaussian DP noise
+
 
 @dataclass
 class ExperimentConfig:
