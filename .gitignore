@@ -30,8 +30,11 @@ wheels/
 tmp_test_data/
 raw_data/
 prepared_data/
+prepared_data_*
 fl_data_partitions/
+fl_data_partitions_*
 EXPERIMENT/
+EXPERIMENT_*
 logs/
 
 # IDE / Editor settings
