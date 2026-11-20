@@ -5,7 +5,7 @@ Implements FedAvg and FedNova for federated learning.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 import copy
 
 import torch
