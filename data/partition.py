@@ -87,8 +87,10 @@ class FCILDataPartitioner:
                 max_k_possible = min(n_active_clients, max(1, pool_size // self.min_samples_slot))
 
                 if label == cover_label:
-                    # Cover label is assigned to ALL active clients (up to max_k_possible)
-                    selected_clients = active_client_ids[:max_k_possible]
+                    # Cover label must cover ALL active clients whenever pool_size >= n_active_clients;
+                    # _dirichlet_split scales base_floor = min(min_samples_slot, pool_size // k_clients).
+                    cover_k = min(n_active_clients, pool_size)
+                    selected_clients = active_client_ids[:cover_k]
                 else:
                     # Other labels assigned to random subset k in [ceil(max_k/2), max_k]
                     min_k = max(1, math.ceil(max_k_possible / 2))

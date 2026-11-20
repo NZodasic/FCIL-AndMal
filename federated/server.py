@@ -148,11 +148,24 @@ class FLServer:
             client_ids: List of client IDs to distribute to (None = all).
         """
         global_state = self.global_model.state_dict()
+        global_classes = getattr(self.global_model, "current_classes", None)
 
         target_clients = client_ids if client_ids else self.clients.keys()
 
         for cid in target_clients:
             if cid in self.clients:
+                client_model = self.clients[cid].model
+                client_classes = getattr(client_model, "current_classes", None)
+                if (
+                    global_classes is not None
+                    and client_classes is not None
+                    and client_classes < global_classes
+                ):
+                    needed = global_classes - client_classes
+                    if hasattr(client_model, "expand_classes"):
+                        client_model.expand_classes(needed)
+                    elif hasattr(client_model, "expand_classifier"):
+                        client_model.expand_classifier(needed)
                 self.clients[cid].set_model_state(global_state)
 
     def aggregate_models(
@@ -617,15 +630,15 @@ class FLServer:
 
         # Distribute converged global model to clients before after_task so Fisher/Herding
         # are computed on the final aggregated global model parameters
+        active_with_data = [cid for cid in client_ids if cid in train_loaders]
         self.distribute_model(client_ids)
-        for cid in client_ids:
-            if cid in train_loaders:
-                self.clients[cid].after_task(
-                    task_id,
-                    train_loader=train_loaders[cid]
-                )
+        for cid in active_with_data:
+            self.clients[cid].after_task(
+                task_id,
+                train_loader=train_loaders[cid]
+            )
         # Consolidate global Fisher and optimal_params across clients (for EWC / FL-CL-IDS)
-        self.consolidate_global_ewc_state(client_ids)
+        self.consolidate_global_ewc_state(active_with_data)
         # Sync any classifier weight alignment from global optimal_params back to global_model
         if self.global_optimal_params:
             state = self.global_model.state_dict()
@@ -661,7 +674,8 @@ class FLServer:
                 if hasattr(self.logger, "log_task_evaluation"):
                     self.logger.log_task_evaluation(
                         task_id=task_id,
-                        eval_metrics=final_evaluation,
+                        task_name=f"Task_{task_id + 1}",
+                        metrics=final_evaluation,
                     )
             else:
                 print(f"{context} | {format_classification_metrics(final_evaluation)}")

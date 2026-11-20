@@ -299,10 +299,18 @@ def run_experiment(
     return result.returncode == 0, elapsed
 
 
-def is_experiment_completed(scenario_output_dir: Path, full_case_tag: str, n_tasks: int = 5) -> bool:
+def is_experiment_completed(
+    scenario_output_dir: Path,
+    full_case_tag: str,
+    n_tasks: int = 5,
+    feature_type: Optional[str] = None,
+) -> bool:
     """Check if an experiment directory exists with all tasks completed in its metrics CSV."""
+    feature_token = f"_{feature_type.upper()}_" if feature_type else None
     for exp_dir in scenario_output_dir.glob(f"{full_case_tag}_*"):
         if not exp_dir.is_dir():
+            continue
+        if feature_token and feature_token not in exp_dir.name:
             continue
         metrics_file = exp_dir / f"{exp_dir.name}_metrics.csv"
         if metrics_file.is_file():
@@ -445,11 +453,21 @@ def main() -> None:
                 print(f"  [{idx:02d}] {name:<26}  mode={mode:<12} method={method:<10} agg={agg or 'N/A'}")
         return
 
-    # Auto-detect raw data directory if default ./raw_data does not exist but ./Dataset exists
+    # Auto-detect raw data directory if default ./raw_data does not exist (or only holds synthetic dev data) while ./Dataset exists
     raw_dir = Path(args.raw_root)
-    if not raw_dir.is_dir() and Path("./Dataset").is_dir():
-        raw_dir = Path("./Dataset")
-        info(f"Auto-detected dataset directory: {raw_dir}")
+    if args.raw_root == "./raw_data" and not args.generate_synthetic:
+        if not raw_dir.is_dir() and Path("./Dataset").is_dir():
+            raw_dir = Path("./Dataset")
+            info(f"Auto-detected dataset directory: {raw_dir}")
+        elif (
+            (raw_dir / "SYNTHETIC_DATASET.json").is_file()
+            and Path("./Dataset").is_dir()
+            and not (Path("./Dataset") / "SYNTHETIC_DATASET.json").is_file()
+        ):
+            warn("./raw_data contains synthetic development data; switching to real dataset directory ./Dataset.")
+            raw_dir = Path("./Dataset")
+        elif (raw_dir / "SYNTHETIC_DATASET.json").is_file():
+            warn("./raw_data contains SYNTHETIC development data (not real CIC-AndMal-2020 telemetry).")
 
     prepared_dir  = Path(args.prepared_dir)
     partition_dir = Path(args.partition_dir)
@@ -524,7 +542,7 @@ def main() -> None:
                 section(f"[{idx}/{len(cent_exps)}] {case_name} (Centralized Single-Server)")
                 info(f"mode={mode}  method={method}  aggregator=N/A  epochs/task={CENTRAL_EPOCHS}")
 
-                if args.skip_completed and is_experiment_completed(scenario_output_dir, case_name):
+                if args.skip_completed and is_experiment_completed(scenario_output_dir, case_name, feature_type=args.feature_type):
                     ok(f"Skipping {case_name} — already completed successfully.")
                     scenario_results.append({
                         "case":    case_name,
@@ -598,7 +616,7 @@ def main() -> None:
                     info(f"mode={mode}  method={method}  aggregator={agg}  clients={k_clients}")
                     info(f"rounds/task={FL_ROUNDS}  local_epochs={FL_LOCAL_EPOCHS}")
 
-                    if args.skip_completed and is_experiment_completed(scenario_output_dir, full_case_tag):
+                    if args.skip_completed and is_experiment_completed(scenario_output_dir, full_case_tag, feature_type=args.feature_type):
                         ok(f"Skipping {full_case_tag} — already completed successfully.")
                         scenario_results.append({
                             "case":    full_case_tag,
@@ -656,17 +674,30 @@ def main() -> None:
     # ──────────────────────────────────────────────────────────────────────────
     # 3. Post-Experiment Academic Report and Summary Graphs Generation
     # ──────────────────────────────────────────────────────────────────────────
+    if args.dry_run:
+        info("[DRY RUN] Skipping post-experiment report & graph generation.")
+        return
+
     banner("POST-EXPERIMENT REPORT & GRAPH GENERATION")
+    is_default_root = output_root.resolve() == Path("./EXPERIMENT").resolve()
+    target_report_dir = Path("report") if is_default_root else (output_root / "report")
+    target_fig_dir = (Path("report") / "figures") if is_default_root else (output_root / "report" / "figures")
     try:
-        info("Generating Master Excel Report (report/FCIL_AndMal.xlsx)...")
-        sub_res = subprocess.run([sys.executable, "report/generate_master_report.py"], check=False)
+        info(f"Generating Master Excel Report ({target_report_dir / 'FCIL_AndMal.xlsx'})...")
+        sub_res = subprocess.run(
+            [sys.executable, "report/generate_master_report.py", "--exp_dir", str(output_root)],
+            check=False,
+        )
         if sub_res.returncode == 0:
             ok("Master Excel Report generated successfully.")
         else:
             warn(f"Master Excel generation returned exit code {sub_res.returncode}.")
 
-        info("Generating Academic Summary Figures (report/generate_summary_graphs.py)...")
-        sub_res2 = subprocess.run([sys.executable, "report/generate_summary_graphs.py"], check=False)
+        info(f"Generating Academic Summary Figures ({target_fig_dir})...")
+        sub_res2 = subprocess.run(
+            [sys.executable, "report/generate_summary_graphs.py", "--exp_dir", str(output_root)],
+            check=False,
+        )
         if sub_res2.returncode == 0:
             ok("Academic Summary Figures generated successfully.")
         else:

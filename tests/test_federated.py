@@ -3,14 +3,17 @@ Unit Tests for Federated Aggregators, Clients, and Checkpoint Management.
 """
 
 import os
+import json
 import logging
 import shutil
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import torch
 import numpy as np
+from torch.utils.data import DataLoader, TensorDataset
 
 from config import (
     ExperimentConfig,
@@ -22,8 +25,11 @@ from config import (
 )
 from models.fcil_model import FCILNet
 from federated.aggregators import FedAvgAggregator, FedNovaAggregator, FedSGDAggregator, build_aggregator
+from federated.client import FLClient
+from federated.il_strategy_adapter import ILMethodStrategyAdapter
 from federated.server import FLServer
 from federated.prototype_manager import GlobalPrototypeManager
+from methods.finetune import FineTuneMethod
 from training.checkpoint import CheckpointManager
 from training.trainer import CentralizedTrainer
 from utils.logging import ExperimentLogger
@@ -287,6 +293,128 @@ class TestFederated(unittest.TestCase):
         for task_id in range(1, 6):
             task_paths = sorted((checkpoint_root / f"task_{task_id:02d}").glob("*.pt"))
             self.assertEqual([path.name for path in task_paths], ["epoch_0002_weights.pt"])
+
+    def test_fedavg_preserves_integer_buffers(self):
+        agg = FedAvgAggregator()
+        global_state = {
+            "w": torch.tensor([1.0, 1.0], dtype=torch.float32),
+            "bn.num_batches_tracked": torch.tensor(0, dtype=torch.int64),
+        }
+        client1_state = {
+            "w": torch.tensor([2.0, 2.0], dtype=torch.float32),
+            "bn.num_batches_tracked": torch.tensor(4, dtype=torch.int64),
+        }
+        client2_state = {
+            "w": torch.tensor([4.0, 4.0], dtype=torch.float32),
+            "bn.num_batches_tracked": torch.tensor(4, dtype=torch.int64),
+        }
+        new_state = agg.aggregate(global_state, [client1_state, client2_state], [100, 300])
+        self.assertTrue(torch.allclose(new_state["w"], torch.tensor([3.5, 3.5])))
+        self.assertEqual(new_state["bn.num_batches_tracked"].dtype, torch.int64)
+        self.assertEqual(int(new_state["bn.num_batches_tracked"].item()), 4)
+
+    def test_fl_server_logs_task_evaluation_and_expands_lagging_client(self):
+        class EvaluatorStub:
+            @staticmethod
+            def evaluate_all_seen_tasks(model, task_id):
+                n_classes = (task_id + 1) * 3
+                return {
+                    "accuracy": 0.5,
+                    "precision_macro": 0.5,
+                    "recall_macro": 0.5,
+                    "f1_macro": 0.5,
+                    "precision_micro": 0.5,
+                    "recall_micro": 0.5,
+                    "f1_micro": 0.5,
+                    "precision_weighted": 0.5,
+                    "recall_weighted": 0.5,
+                    "f1_weighted": 0.5,
+                    "macro_f1": 0.5,
+                    "confusion_matrix_labels": list(range(n_classes)),
+                    "confusion_matrix": np.eye(n_classes, dtype=int).tolist(),
+                }
+
+        cfg = ModelConfig(
+            backbone_type="mlp",
+            input_dim=4,
+            latent_dim=4,
+            hidden_dims=[8],
+            classes_per_task=3,
+            num_total_classes=15,
+            dropout=0.0,
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            logger = ExperimentLogger(tmp_dir, "fl_server_test", log_level=logging.CRITICAL)
+            global_model = FCILNet(cfg)
+            server = FLServer(
+                global_model=global_model,
+                aggregator=FedAvgAggregator(),
+                device="cpu",
+                config=ExperimentConfig(model=cfg),
+                evaluator=EvaluatorStub(),
+                logger=logger,
+            )
+            for cid in (0, 1):
+                c_model = FCILNet(cfg)
+                adapter = ILMethodStrategyAdapter(
+                    model=c_model,
+                    il_method=FineTuneMethod(),
+                    lr=0.01,
+                    device="cpu",
+                    classes_per_task=3,
+                )
+                server.register_client(FLClient(client_id=cid, model=c_model, strategy=adapter, device="cpu"))
+
+            loader_t0 = DataLoader(
+                TensorDataset(torch.randn(8, 4), torch.tensor([0, 1, 2, 0, 1, 2, 0, 1])),
+                batch_size=4,
+            )
+            server.run_task(
+                task_id=0,
+                n_new_classes=3,
+                client_ids=[0],
+                train_loaders={0: loader_t0},
+                n_rounds=1,
+                n_epochs=1,
+            )
+
+            # Simulate Task 1 where client 1 joined earlier at 3 classes while global expands to 6
+            loader_t1 = DataLoader(
+                TensorDataset(torch.randn(8, 4), torch.tensor([3, 4, 5, 3, 4, 5, 3, 4])),
+                batch_size=4,
+            )
+            server.run_task(
+                task_id=1,
+                n_new_classes=3,
+                client_ids=[0, 1],
+                train_loaders={0: loader_t1, 1: loader_t1},
+                n_rounds=1,
+                n_epochs=1,
+            )
+
+            # Register a lagging client stuck at 3 classes and ensure distribute_model expands it to 6
+            lagging_model = FCILNet(cfg)
+            lagging_adapter = ILMethodStrategyAdapter(
+                model=lagging_model,
+                il_method=FineTuneMethod(),
+                lr=0.01,
+                device="cpu",
+                classes_per_task=3,
+            )
+            server.register_client(FLClient(client_id=2, model=lagging_model, strategy=lagging_adapter, device="cpu"))
+            self.assertEqual(server.clients[2].model.current_classes, 3)
+            server.distribute_model([2])
+            self.assertEqual(server.clients[2].model.current_classes, 6)
+
+            logger.close()
+
+            jsonl_records = [
+                json.loads(line)
+                for line in Path(tmp_dir, "fl_server_test.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            task_eval_events = [r for r in jsonl_records if r.get("event") == "task_evaluation"]
+            self.assertEqual([r["task_name"] for r in task_eval_events], ["Task_1", "Task_2"])
 
 
 if __name__ == "__main__":

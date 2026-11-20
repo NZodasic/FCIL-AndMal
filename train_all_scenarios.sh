@@ -9,8 +9,8 @@
 #   4. all:     Chạy tuần tự toàn bộ cả 3 dạng đặc trưng
 #
 # Đối với mỗi dạng đặc trưng, script sẽ chạy:
-#   - Toàn bộ 5 bài toán Centralized (FineTune, EWCDR, MES, SPCIL, MALFSIL)
-#   - Toàn bộ 6 bài toán Federated Learning (FedAvg, FedNova, EWCDR, MES, SPCIL, MALFSIL)
+#   - Toàn bộ 6 bài toán Centralized (FineTune, EWCDR, MES, SPCIL, MALFSIL, Falcon)
+#   - Toàn bộ 9 bài toán Federated Learning (FedAvg, FedNova, EWCDR, MES, SPCIL, MALFSIL, Falcon, MalDrift, MalDrift_FedAvg)
 #   - Cả 2 kịch bản phân tán: 20 clients (K=20) và 50 clients (K=50)
 # ==============================================================================
 

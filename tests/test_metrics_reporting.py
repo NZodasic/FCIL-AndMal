@@ -179,6 +179,65 @@ class TestMetricsReporting(unittest.TestCase):
             )
             self.assertEqual(workbook["case_a"].max_row, 3)
 
+    @unittest.skipUnless(OPENPYXL_AVAILABLE, "openpyxl is not installed")
+    def test_custom_exp_dir_reporting_and_summary_graphs(self):
+        import json
+        from openpyxl import load_workbook
+        from report.generate_master_report import generate_master_excel
+        from report.generate_summary_graphs import generate_all_summary_graphs
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            custom_exp = Path(tmp_dir) / "EXPERIMENT_seed123"
+            runs = [
+                ("centralized", "Centralized_Falcon_CENTRALIZED_DYNAMIC_FALCON"),
+                ("20clients", "FL_Falcon_K20_FEDERATED_DYNAMIC_FALCON_FEDAVG_K20_E5_S5"),
+                ("50clients", "FL_MalDrift_K50_FEDERATED_DYNAMIC_FINETUNE_FEDSGD_K50_E5_S5"),
+            ]
+            for folder, bname in runs:
+                run_dir = custom_exp / folder / bname
+                run_dir.mkdir(parents=True, exist_ok=True)
+                with (run_dir / f"{bname}_metrics.csv").open("w", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        "timestamp", "step", "task_id", "round_id",
+                        "accuracy", "precision_macro", "recall_macro", "f1_macro",
+                        "precision_micro", "recall_micro", "f1_micro",
+                        "precision_weighted", "recall_weighted", "f1_weighted",
+                    ])
+                    for t in range(5):
+                        writer.writerow([
+                            "2026-11-20T00:00:00", (t + 1) * 50, t, (t + 1) * 50,
+                            0.7 - 0.05 * t, 0.65, 0.65, 0.65 - 0.05 * t,
+                            0.7 - 0.05 * t, 0.7 - 0.05 * t, 0.7 - 0.05 * t,
+                            0.7, 0.7, 0.7,
+                        ])
+                with (run_dir / f"{bname}.jsonl").open("w") as f:
+                    for t in range(5):
+                        n_cls = (t + 1) * 3
+                        rec = {
+                            "event": "test_evaluation",
+                            "task_id": t,
+                            "step": (t + 1) * 50,
+                            "confusion_matrix": np.eye(n_cls, dtype=int).tolist(),
+                        }
+                        f.write(json.dumps(rec) + "\n")
+
+            generate_master_excel(exp_dir=str(custom_exp))
+            excel_path = custom_exp / "report" / "FCIL_AndMal.xlsx"
+            copy_path = custom_exp / "report" / "MASTER_overall_all_configs_FCIL.xlsx"
+            self.assertTrue(excel_path.is_file())
+            self.assertTrue(copy_path.is_file())
+
+            wb = load_workbook(excel_path, read_only=True)
+            self.assertIn("falcon", wb.sheetnames)
+            self.assertIn("maldrift", wb.sheetnames)
+            self.assertEqual(wb["results_all"].max_row, 16)
+
+            generate_all_summary_graphs(exp_dir=str(custom_exp))
+            fig_dir = custom_exp / "report" / "figures"
+            self.assertTrue((fig_dir / "summary_fig1_accuracy_trajectories.png").is_file())
+            self.assertTrue((fig_dir / "summary_fig8_master_overview_dashboard.pdf").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

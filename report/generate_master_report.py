@@ -13,6 +13,7 @@ import os
 import sys
 import glob
 import json
+import argparse
 import pandas as pd
 import numpy as np
 import openpyxl
@@ -159,13 +160,18 @@ def auto_fit_columns(ws, min_width=11):
         ws.column_dimensions[col_letter].width = max(max_len + 3, min_width)
 
 
-def load_all_experiments():
-    """Load all experiment directories from EXPERIMENT/20clients, 50clients, and centralized."""
+def load_all_experiments(exp_dir=None):
+    """Load all experiment directories from 20clients, 50clients, and centralized under exp_dir."""
+    target_exp_dir = os.path.abspath(exp_dir) if exp_dir else EXP_DIR
     all_runs = []
-    folders = [d for d in os.listdir(EXP_DIR) if os.path.isdir(os.path.join(EXP_DIR, d))]
+    if not os.path.isdir(target_exp_dir):
+        print(f"[Warning] Experiment directory not found: {target_exp_dir}")
+        return all_runs
+
+    folders = [d for d in os.listdir(target_exp_dir) if os.path.isdir(os.path.join(target_exp_dir, d))]
 
     for folder_name in sorted(folders):
-        folder_path = os.path.join(EXP_DIR, folder_name)
+        folder_path = os.path.join(target_exp_dir, folder_name)
         if folder_name not in ["20clients", "50clients", "centralized"]:
             continue
 
@@ -249,10 +255,18 @@ def load_all_experiments():
     return all_runs
 
 
-def generate_master_excel():
-    os.makedirs(REPORT_DIR, exist_ok=True)
-    all_runs = load_all_experiments()
-    print(f"Loaded {len(all_runs)} experimental runs from {EXP_DIR}.")
+def generate_master_excel(exp_dir=None, report_dir=None):
+    target_exp_dir = os.path.abspath(exp_dir) if exp_dir else EXP_DIR
+    if report_dir:
+        target_report_dir = os.path.abspath(report_dir)
+    elif os.path.normpath(target_exp_dir) != os.path.normpath(EXP_DIR):
+        target_report_dir = os.path.join(target_exp_dir, "report")
+    else:
+        target_report_dir = REPORT_DIR
+
+    os.makedirs(target_report_dir, exist_ok=True)
+    all_runs = load_all_experiments(exp_dir=target_exp_dir)
+    print(f"Loaded {len(all_runs)} experimental runs from {target_exp_dir}.")
 
     wb = openpyxl.Workbook()
     wb.remove(wb.active)  # Remove default blank sheet
@@ -497,7 +511,7 @@ def generate_master_excel():
         c.border = st["border_header"]
         c.alignment = st["align_center"]
 
-    methods_fl = ["fedavg", "fednova", "spcil", "ewc", "replay", "malfsil"]
+    methods_fl = ["fedavg", "fednova", "spcil", "ewc", "replay", "malfsil", "falcon", "maldrift"]
     for feat_mod in ["dynamic", "static", "fused"]:
         for m in methods_fl:
             r20_tasks = [
@@ -555,9 +569,12 @@ def generate_master_excel():
     auto_fit_columns(ws_scale, min_width=12)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # SHEET 5+: Individual Method Sheets (malfsil, ewc, replay, spcil, fedavg, fednova, finetune)
+    # SHEET 5+: Individual Method Sheets (malfsil, ewc, replay, spcil, fedavg, fednova, finetune, + falcon/maldrift/fedsgd if present)
     # ──────────────────────────────────────────────────────────────────────────
-    for m in ["malfsil", "ewc", "replay", "spcil", "fedavg", "fednova", "finetune"]:
+    base_methods = ["malfsil", "ewc", "replay", "spcil", "fedavg", "fednova", "finetune"]
+    present_methods = {r["method"] for r in all_runs}
+    extra_methods = [m for m in ["falcon", "maldrift", "fedsgd"] if m in present_methods]
+    for m in base_methods + extra_methods:
         ws_m = wb.create_sheet(title=m)
         ws_m.views.sheetView[0].showGridLines = True
 
@@ -653,8 +670,8 @@ def generate_master_excel():
     auto_fit_columns(ws_stat, min_width=12)
 
     # Save to both target Excel paths
-    out_master = os.path.join(REPORT_DIR, "FCIL_AndMal.xlsx")
-    out_copy = os.path.join(REPORT_DIR, "MASTER_overall_all_configs_FCIL.xlsx")
+    out_master = os.path.join(target_report_dir, "FCIL_AndMal.xlsx")
+    out_copy = os.path.join(target_report_dir, "MASTER_overall_all_configs_FCIL.xlsx")
     wb.save(out_master)
     wb.save(out_copy)
     print(f"Master Excel successfully generated and saved to:")
@@ -663,4 +680,8 @@ def generate_master_excel():
 
 
 if __name__ == "__main__":
-    generate_master_excel()
+    parser = argparse.ArgumentParser(description="Generate Master Excel Report for FCIL-AndMal")
+    parser.add_argument("--exp_dir", type=str, default=None, help="Experiment output root directory")
+    parser.add_argument("--report_dir", type=str, default=None, help="Output directory for generated Excel reports")
+    args = parser.parse_args()
+    generate_master_excel(exp_dir=args.exp_dir, report_dir=args.report_dir)

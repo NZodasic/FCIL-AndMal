@@ -52,12 +52,15 @@ class FedAvg(BaseAggregator):
         client_weights = [w / total_weight for w in client_weights]
 
         aggregated_state = {}
-        for key in global_state.keys():
-            aggregated = sum(
-                client_states[i][key] * client_weights[i]
-                for i in range(len(client_states))
-            )
-            aggregated_state[key] = aggregated
+        for key, g_val in global_state.items():
+            if g_val.dtype.is_floating_point:
+                aggregated = sum(
+                    client_states[i][key].to(g_val.device) * client_weights[i]
+                    for i in range(len(client_states))
+                )
+                aggregated_state[key] = aggregated.to(dtype=g_val.dtype)
+            else:
+                aggregated_state[key] = client_states[0][key].to(g_val.device).clone()
 
         if is_dict:
             return aggregated_state

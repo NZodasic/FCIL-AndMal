@@ -15,6 +15,7 @@ import os
 import sys
 import glob
 import json
+import argparse
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
@@ -46,10 +47,6 @@ EXP_DIR = os.path.join(REPO_ROOT, "EXPERIMENT")
 REPORT_FIG_DIR = os.path.join(REPO_ROOT, "report", "figures")
 PAPER_DIR = os.path.join(REPO_ROOT, "Paper")
 PAPER_FIG_DIR = os.path.join(REPO_ROOT, "Paper", "figures")
-
-os.makedirs(REPORT_FIG_DIR, exist_ok=True)
-os.makedirs(PAPER_DIR, exist_ok=True)
-os.makedirs(PAPER_FIG_DIR, exist_ok=True)
 
 METHOD_COLORS = {
     "MALFSIL": "#1b9e77",       # Teal Green (Proposed 3-Tier)
@@ -103,20 +100,22 @@ CLASS_NAMES = [
 ]
 
 
-def save_figure(fig, base_name):
-    """Save figure to report/figures/, Paper/, and Paper/figures/ in PDF and PNG formats."""
-    for dest_dir in [REPORT_FIG_DIR, PAPER_DIR, PAPER_FIG_DIR]:
+def save_figure(fig, base_name, dest_dirs=None):
+    """Save figure to destination directories in PDF and PNG formats."""
+    target_dirs = dest_dirs or [REPORT_FIG_DIR, PAPER_DIR, PAPER_FIG_DIR]
+    for dest_dir in target_dirs:
+        os.makedirs(dest_dir, exist_ok=True)
         pdf_path = os.path.join(dest_dir, f"{base_name}.pdf")
         png_path = os.path.join(dest_dir, f"{base_name}.png")
         fig.savefig(pdf_path, format="pdf", bbox_inches="tight", dpi=300)
         fig.savefig(png_path, format="png", bbox_inches="tight", dpi=300)
-    print(f"Saved: {base_name}.pdf & .png -> report/figures/ and Paper/")
+    print(f"Saved: {base_name}.pdf & .png -> {', '.join(target_dirs)}")
 
 
-def load_all_metrics():
+def load_all_metrics(exp_dir=None):
     """Load and aggregate metrics across all runs."""
     from report.generate_master_report import load_all_experiments
-    all_runs = load_all_experiments()
+    all_runs = load_all_experiments(exp_dir=exp_dir)
 
     processed = []
     for r in all_runs:
@@ -158,7 +157,7 @@ def load_all_metrics():
     return processed
 
 
-def fig1_accuracy_trajectories(runs, feature_type="dynamic", suffix=""):
+def fig1_accuracy_trajectories(runs, feature_type="dynamic", suffix="", dest_dirs=None):
     """Plot Accuracy trajectories across Tasks 1 to 5 for Centralized, FL K=20, and FL K=50."""
     mod_runs = [r for r in runs if r["feature_type"] == feature_type]
     if not mod_runs:
@@ -176,7 +175,7 @@ def fig1_accuracy_trajectories(runs, feature_type="dynamic", suffix=""):
     collapse_acc = 8.38 if feature_type != "static" else 3.75
     max_y = max([tm["accuracy"] for r in mod_runs for tm in r["tasks"]] + [85.0])
 
-    method_order = ["MALFSIL", "MES", "EWC", "SPCIL", "FEDNOVA", "FEDAVG", "FINETUNE"]
+    method_order = ["MALFSIL", "FALCON", "MALDRIFT", "MES", "EWC", "SPCIL", "FEDNOVA", "FEDSGD", "FEDAVG", "FINETUNE"]
 
     for ax, (title, run_list) in zip(axes, subsets):
         ax.axhline(collapse_acc, color="crimson", linestyle=":", linewidth=1.8, alpha=0.9,
@@ -204,11 +203,11 @@ def fig1_accuracy_trajectories(runs, feature_type="dynamic", suffix=""):
     axes[0].set_ylabel("Global Test Accuracy (%)", fontweight="bold")
     fig.suptitle(f"Cumulative Test Accuracy Trajectories Across Incremental Tasks ({feature_type.capitalize()} Features)", fontsize=15, fontweight="bold", y=1.02)
     plt.tight_layout()
-    save_figure(fig, f"summary_fig1_accuracy_trajectories{suffix}")
+    save_figure(fig, f"summary_fig1_accuracy_trajectories{suffix}", dest_dirs=dest_dirs)
     plt.close()
 
 
-def fig2_macro_f1_degradation(runs, feature_type="dynamic", suffix=""):
+def fig2_macro_f1_degradation(runs, feature_type="dynamic", suffix="", dest_dirs=None):
     """Plot Macro-F1 degradation trajectories across Tasks 1 to 5."""
     mod_runs = [r for r in runs if r["feature_type"] == feature_type]
     if not mod_runs:
@@ -225,7 +224,7 @@ def fig2_macro_f1_degradation(runs, feature_type="dynamic", suffix=""):
     tasks_x = [1, 2, 3, 4, 5]
     collapse_f1 = 1.03
     max_f1 = max([tm["macro_f1"] for r in mod_runs for tm in r["tasks"]] + [50.0])
-    method_order = ["MALFSIL", "MES", "EWC", "SPCIL", "FEDNOVA", "FEDAVG", "FINETUNE"]
+    method_order = ["MALFSIL", "FALCON", "MALDRIFT", "MES", "EWC", "SPCIL", "FEDNOVA", "FEDSGD", "FEDAVG", "FINETUNE"]
 
     for ax, (title, run_list) in zip(axes, subsets):
         ax.axhline(collapse_f1, color="crimson", linestyle=":", linewidth=1.8, alpha=0.9,
@@ -253,11 +252,11 @@ def fig2_macro_f1_degradation(runs, feature_type="dynamic", suffix=""):
     axes[0].set_ylabel("Global Macro-F1 Score (%)", fontweight="bold")
     fig.suptitle(f"Macro-F1 Retention Across Sequential Incremental Tasks ({feature_type.capitalize()} Features)", fontsize=15, fontweight="bold", y=1.02)
     plt.tight_layout()
-    save_figure(fig, f"summary_fig2_macro_f1_degradation{suffix}")
+    save_figure(fig, f"summary_fig2_macro_f1_degradation{suffix}", dest_dirs=dest_dirs)
     plt.close()
 
 
-def fig3_task5_final_benchmark(runs, feature_type="dynamic", suffix=""):
+def fig3_task5_final_benchmark(runs, feature_type="dynamic", suffix="", dest_dirs=None):
     """Comprehensive Task 5 Benchmark Bar Chart: Final Accuracy & Macro-F1."""
     mod_runs = [r for r in runs if r["feature_type"] == feature_type]
     if not mod_runs:
@@ -333,11 +332,11 @@ def fig3_task5_final_benchmark(runs, feature_type="dynamic", suffix=""):
 
     fig.suptitle(f"Final Task 5 Performance Ranking Across Benchmark Configurations ({feature_type.capitalize()} Features)", fontsize=15, fontweight="bold", y=1.06)
     plt.tight_layout()
-    save_figure(fig, f"summary_fig3_task5_final_benchmark{suffix}")
+    save_figure(fig, f"summary_fig3_task5_final_benchmark{suffix}", dest_dirs=dest_dirs)
     plt.close()
 
 
-def fig4_client_scaling_k20_vs_k50(runs, feature_type="dynamic", suffix=""):
+def fig4_client_scaling_k20_vs_k50(runs, feature_type="dynamic", suffix="", dest_dirs=None):
     """Client Scaling Impact: Grouped bar chart comparing K=20 vs K=50 for Federated algorithms."""
     fl_runs = [r for r in runs if r["setting"] == "federated" and r["feature_type"] == feature_type]
     if not fl_runs:
@@ -398,11 +397,11 @@ def fig4_client_scaling_k20_vs_k50(runs, feature_type="dynamic", suffix=""):
 
     fig.suptitle(f"Impact of Federated Client Scaling on Final Performance ($K=20$ vs. $K=50$, {feature_type.capitalize()})", fontsize=15, fontweight="bold", y=1.02)
     plt.tight_layout()
-    save_figure(fig, f"summary_fig4_client_scaling_k20_vs_k50{suffix}")
+    save_figure(fig, f"summary_fig4_client_scaling_k20_vs_k50{suffix}", dest_dirs=dest_dirs)
     plt.close()
 
 
-def fig5_continual_forgetting_tradeoff(runs, feature_type="dynamic"):
+def fig5_continual_forgetting_tradeoff(runs, feature_type="dynamic", dest_dirs=None):
     """Continual Average Accuracy vs Average Forgetting Pareto trade-off."""
     mod_runs = [r for r in runs if r["feature_type"] == feature_type]
     if not mod_runs:
@@ -457,7 +456,7 @@ def fig5_continual_forgetting_tradeoff(runs, feature_type="dynamic"):
     ax.legend(loc="lower left", frameon=True)
 
     plt.tight_layout()
-    save_figure(fig, "summary_fig5_continual_forgetting_tradeoff")
+    save_figure(fig, "summary_fig5_continual_forgetting_tradeoff", dest_dirs=dest_dirs)
     plt.close()
 
 
@@ -475,15 +474,16 @@ def _get_last_recalls(jsonl_p):
     return rec
 
 
-def fig6_recency_collapse_proof():
+def fig6_recency_collapse_proof(exp_dir=None, dest_dirs=None):
     """Visual Proof of Catastrophic Recency Collapse vs FL-CL-IDS & MALFSIL Retention."""
-    path_fedavg = os.path.join(EXP_DIR, "20clients",
+    target_exp_dir = os.path.abspath(exp_dir) if exp_dir else EXP_DIR
+    path_fedavg = os.path.join(target_exp_dir, "20clients",
         "FL_FedAvg_K20_FEDERATED_DYNAMIC_FINETUNE_FEDAVG_K20_E5_S5",
         "FL_FedAvg_K20_FEDERATED_DYNAMIC_FINETUNE_FEDAVG_K20_E5_S5.jsonl")
-    path_ewcdr = os.path.join(EXP_DIR, "20clients",
+    path_ewcdr = os.path.join(target_exp_dir, "20clients",
         "FL_EWCDR_K20_FEDERATED_DYNAMIC_EWC_FEDAVG_K20_E5_S5",
         "FL_EWCDR_K20_FEDERATED_DYNAMIC_EWC_FEDAVG_K20_E5_S5.jsonl")
-    path_malfsil_fl = os.path.join(EXP_DIR, "20clients",
+    path_malfsil_fl = os.path.join(target_exp_dir, "20clients",
         "FL_MALFSIL_K20_FEDERATED_DYNAMIC_MALFSIL_FEDAVG_K20_E5_S5",
         "FL_MALFSIL_K20_FEDERATED_DYNAMIC_MALFSIL_FEDAVG_K20_E5_S5.jsonl")
 
@@ -522,11 +522,11 @@ def fig6_recency_collapse_proof():
     ax.legend(loc="upper left", frameon=True, fontsize=10)
 
     plt.tight_layout()
-    save_figure(fig, "summary_fig6_recency_collapse_proof")
+    save_figure(fig, "summary_fig6_recency_collapse_proof", dest_dirs=dest_dirs)
     plt.close()
 
 
-def fig7_runtime_scalability():
+def fig7_runtime_scalability(dest_dirs=None):
     """Wall-clock Runtime Comparison & FL-CL-IDS Round-Skip Communication Reduction."""
     data = [
         {"paradigm": "Centralized\n(1 Server)", "method": "FineTune", "hours": 0.45},
@@ -575,18 +575,19 @@ def fig7_runtime_scalability():
                 arrowprops=dict(facecolor="#d95f02", shrink=0.08, width=1.5, headwidth=6))
 
     plt.tight_layout()
-    save_figure(fig, "summary_fig7_runtime_scalability")
+    save_figure(fig, "summary_fig7_runtime_scalability", dest_dirs=dest_dirs)
     plt.close()
 
 
-def fig8_master_overview_dashboard(runs, feature_type="dynamic"):
+def fig8_master_overview_dashboard(runs, feature_type="dynamic", exp_dir=None, dest_dirs=None):
     """Unified 2x2 Master Dashboard synthesizing the 4 foundational research insights."""
+    target_exp_dir = os.path.abspath(exp_dir) if exp_dir else EXP_DIR
     mod_runs = [r for r in runs if r["feature_type"] == feature_type]
     if not mod_runs:
         mod_runs = runs
 
     fig, axes = plt.subplots(2, 2, figsize=(18, 13), dpi=300)
-    method_order = ["MALFSIL", "MES", "EWC", "SPCIL", "FEDNOVA", "FEDAVG", "FINETUNE"]
+    method_order = ["MALFSIL", "FALCON", "MALDRIFT", "MES", "EWC", "SPCIL", "FEDNOVA", "FEDSGD", "FEDAVG", "FINETUNE"]
 
     # Panel (a): Accuracy Trajectories across FL K=20
     ax_a = axes[0, 0]
@@ -679,13 +680,13 @@ def fig8_master_overview_dashboard(runs, feature_type="dynamic"):
 
     # Panel (d): Recency Collapse Proof
     ax_d = axes[1, 1]
-    path_fedavg = os.path.join(EXP_DIR, "20clients",
+    path_fedavg = os.path.join(target_exp_dir, "20clients",
         "FL_FedAvg_K20_FEDERATED_DYNAMIC_FINETUNE_FEDAVG_K20_E5_S5",
         "FL_FedAvg_K20_FEDERATED_DYNAMIC_FINETUNE_FEDAVG_K20_E5_S5.jsonl")
-    path_ewcdr = os.path.join(EXP_DIR, "20clients",
+    path_ewcdr = os.path.join(target_exp_dir, "20clients",
         "FL_EWCDR_K20_FEDERATED_DYNAMIC_EWC_FEDAVG_K20_E5_S5",
         "FL_EWCDR_K20_FEDERATED_DYNAMIC_EWC_FEDAVG_K20_E5_S5.jsonl")
-    path_malfsil_fl = os.path.join(EXP_DIR, "20clients",
+    path_malfsil_fl = os.path.join(target_exp_dir, "20clients",
         "FL_MALFSIL_K20_FEDERATED_DYNAMIC_MALFSIL_FEDAVG_K20_E5_S5",
         "FL_MALFSIL_K20_FEDERATED_DYNAMIC_MALFSIL_FEDAVG_K20_E5_S5.jsonl")
 
@@ -708,47 +709,62 @@ def fig8_master_overview_dashboard(runs, feature_type="dynamic"):
 
     fig.suptitle("Master Empirical Overview: Federated Class-Incremental Learning on CIC-AndMal-2020", fontsize=16, fontweight="bold", y=1.01)
     plt.tight_layout()
-    save_figure(fig, "summary_fig8_master_overview_dashboard")
+    save_figure(fig, "summary_fig8_master_overview_dashboard", dest_dirs=dest_dirs)
     plt.close()
 
 
-def generate_all_summary_graphs():
+def generate_all_summary_graphs(exp_dir=None, fig_dir=None):
+    target_exp_dir = os.path.abspath(exp_dir) if exp_dir else EXP_DIR
+    if fig_dir:
+        dest_dirs = [os.path.abspath(fig_dir)]
+    elif os.path.normpath(target_exp_dir) != os.path.normpath(EXP_DIR):
+        dest_dirs = [os.path.join(target_exp_dir, "report", "figures")]
+    else:
+        dest_dirs = [REPORT_FIG_DIR, PAPER_DIR, PAPER_FIG_DIR]
+
     print("=" * 70)
     print("FCIL-AndMal Academic Summary Graph Generation")
     print("=" * 70)
-    runs = load_all_metrics()
-    print(f"Loaded {len(runs)} experimental runs for summary graph generation.")
+    runs = load_all_metrics(exp_dir=target_exp_dir)
+    print(f"Loaded {len(runs)} experimental runs from {target_exp_dir} for summary graph generation.")
+    if not runs:
+        print("[Warning] No experimental runs found; skipping summary graph generation.")
+        return
 
     print("\nGenerating Figures 1-4 (Primary Dynamic + Static & Fused modalities)...")
-    fig1_accuracy_trajectories(runs, feature_type="dynamic", suffix="")
-    fig2_macro_f1_degradation(runs, feature_type="dynamic", suffix="")
-    fig3_task5_final_benchmark(runs, feature_type="dynamic", suffix="")
-    fig4_client_scaling_k20_vs_k50(runs, feature_type="dynamic", suffix="")
+    fig1_accuracy_trajectories(runs, feature_type="dynamic", suffix="", dest_dirs=dest_dirs)
+    fig2_macro_f1_degradation(runs, feature_type="dynamic", suffix="", dest_dirs=dest_dirs)
+    fig3_task5_final_benchmark(runs, feature_type="dynamic", suffix="", dest_dirs=dest_dirs)
+    fig4_client_scaling_k20_vs_k50(runs, feature_type="dynamic", suffix="", dest_dirs=dest_dirs)
 
     for mod in ["dynamic", "static", "fused"]:
-        fig1_accuracy_trajectories(runs, feature_type=mod, suffix=f"_{mod}")
-        fig2_macro_f1_degradation(runs, feature_type=mod, suffix=f"_{mod}")
-        fig3_task5_final_benchmark(runs, feature_type=mod, suffix=f"_{mod}")
-        fig4_client_scaling_k20_vs_k50(runs, feature_type=mod, suffix=f"_{mod}")
+        fig1_accuracy_trajectories(runs, feature_type=mod, suffix=f"_{mod}", dest_dirs=dest_dirs)
+        fig2_macro_f1_degradation(runs, feature_type=mod, suffix=f"_{mod}", dest_dirs=dest_dirs)
+        fig3_task5_final_benchmark(runs, feature_type=mod, suffix=f"_{mod}", dest_dirs=dest_dirs)
+        fig4_client_scaling_k20_vs_k50(runs, feature_type=mod, suffix=f"_{mod}", dest_dirs=dest_dirs)
 
     print("\nGenerating Figure 5: Continual Accuracy vs Forgetting Pareto Trade-off...")
-    fig5_continual_forgetting_tradeoff(runs, feature_type="dynamic")
+    fig5_continual_forgetting_tradeoff(runs, feature_type="dynamic", dest_dirs=dest_dirs)
 
     print("\nGenerating Figure 6: Visual Proof of Catastrophic Recency Collapse...")
-    fig6_recency_collapse_proof()
+    fig6_recency_collapse_proof(exp_dir=target_exp_dir, dest_dirs=dest_dirs)
 
     print("\nGenerating Figure 7: Computational Runtime Scalability...")
-    fig7_runtime_scalability()
+    fig7_runtime_scalability(dest_dirs=dest_dirs)
 
     print("\nGenerating Figure 8: Master Overview Dashboard...")
-    fig8_master_overview_dashboard(runs, feature_type="dynamic")
+    fig8_master_overview_dashboard(runs, feature_type="dynamic", exp_dir=target_exp_dir, dest_dirs=dest_dirs)
 
     print("\n" + "=" * 70)
     print("All summary figures successfully generated and saved to:")
-    print(f"  -> {REPORT_FIG_DIR} (.pdf and .png)")
-    print(f"  -> {PAPER_DIR} (.pdf and .png)")
+    for d in dest_dirs:
+        print(f"  -> {d} (.pdf and .png)")
     print("=" * 70)
 
 
 if __name__ == "__main__":
-    generate_all_summary_graphs()
+    parser = argparse.ArgumentParser(description="Generate Academic Summary Figures for FCIL-AndMal")
+    parser.add_argument("--exp_dir", type=str, default=None, help="Experiment output root directory")
+    parser.add_argument("--fig_dir", type=str, default=None, help="Output directory for generated summary figures")
+    args = parser.parse_args()
+    generate_all_summary_graphs(exp_dir=args.exp_dir, fig_dir=args.fig_dir)

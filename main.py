@@ -236,8 +236,19 @@ def build_configs_from_args(args) -> ExperimentConfig:
             "use --method malfsil which is FL-compatible."
         )
     raw_root = args.raw_root
-    if raw_root == "./raw_data" and not os.path.isdir(raw_root) and os.path.isdir("./Dataset"):
-        raw_root = "./Dataset"
+    if raw_root == "./raw_data" and not getattr(args, "generate_synthetic", False):
+        if not os.path.isdir(raw_root) and os.path.isdir("./Dataset"):
+            raw_root = "./Dataset"
+        elif (
+            os.path.isfile(os.path.join(raw_root, "SYNTHETIC_DATASET.json"))
+            and os.path.isdir("./Dataset")
+            and not os.path.isfile(os.path.join("./Dataset", "SYNTHETIC_DATASET.json"))
+        ):
+            print(
+                "[Warning] './raw_data' contains synthetic development data; "
+                "using real dataset directory './Dataset' instead."
+            )
+            raw_root = "./Dataset"
 
     scenario_cfg = ScenarioConfig(
         feature_type=args.feature_type,
@@ -694,10 +705,25 @@ def main():
                 p_file = os.path.join(scenario_dir, f"task_{task_id}", f"client_{cid:02d}.parquet")
                 c_file = os.path.join(scenario_dir, f"task_{task_id}", f"client_{cid:02d}.csv")
                 df_c = pd.read_parquet(p_file) if os.path.isfile(p_file) else pd.read_csv(c_file)
+                if len(df_c) == 0:
+                    logger.warning(
+                        f"Task {task_id + 1}: Client {cid:02d} has 0 local samples; skipping in this task."
+                    )
+                    del df_c
+                    continue
                 f_cols = get_feature_columns(df_c)
                 X_c = df_c[f_cols].to_numpy(dtype=np.float32, copy=False)
                 y_c = np.array([LABEL2ID.get(lbl, -1) for lbl in df_c["label"].values], dtype=np.int64)
                 del df_c
+                valid_mask = y_c >= 0
+                if not np.any(valid_mask):
+                    logger.warning(
+                        f"Task {task_id + 1}: Client {cid:02d} has no valid labeled samples; skipping in this task."
+                    )
+                    continue
+                if not np.all(valid_mask):
+                    X_c = X_c[valid_mask]
+                    y_c = y_c[valid_mask]
                 ds_c = TabularMalwareDataset(X_c, y_c)
                 if getattr(args, "use_balanced_sampler", False) or args.method == "falcon":
                     from data.sampler import BalancedBatchSampler

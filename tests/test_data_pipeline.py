@@ -257,6 +257,42 @@ class TestDataPipeline(unittest.TestCase):
             self.assertEqual(cmd.count("--type"), 1)
             self.assertIn("dynamic", cmd)
 
+    def test_09_partition_k50_small_pool_produces_no_empty_clients(self):
+        """Verify K=50 partitioning with pool_size=490 and min_samples=30 leaves zero empty client shards."""
+        import tempfile
+        rows = []
+        for lbl in ALL_LABELS:
+            n_rows = 978 if lbl == "Riskware" else 490
+            for i in range(n_rows):
+                rows.append({"f0": float(i % 7), "f1": float(i % 5), "label": lbl})
+        df = pd.DataFrame(rows)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg = ScenarioConfig(
+                feature_type="dynamic",
+                n_clients=50,
+                dirichlet_alpha=0.5,
+                seed=123,
+                min_samples_per_label_client=30,
+                partition_output_dir=tmp_dir,
+            )
+            result = FCILDataPartitioner(cfg).partition_dataframe(df)
+            scenario_dir = result["scenario_dir"]
+
+            expected_active = [30, 35, 40, 45, 50]
+            for task_id in range(5):
+                active = get_participating_clients(scenario_dir, task_id)
+                self.assertEqual(len(active), expected_active[task_id])
+                for cid in active:
+                    c_df = pd.read_parquet(
+                        os.path.join(scenario_dir, f"task_{task_id}", f"client_{cid:02d}.parquet")
+                    )
+                    self.assertGreater(
+                        len(c_df),
+                        0,
+                        f"Empty shard for task_{task_id} client_{cid:02d}",
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
