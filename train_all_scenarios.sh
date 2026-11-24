@@ -4,8 +4,8 @@
 # ==============================================================================
 # Hỗ trợ chạy toàn bộ các kịch bản:
 #   1. dynamic: 141-dim behavioral features (Backbone: hybrid_tcn_cnn, TCN + CNN)
-#   2. static:  300-dim manifest & permission features (Backbone: mlp)
-#   3. fused:   441-dim multi-modal features (Backbone: fused)
+#   2. static:  9,503-dim manifest & permission features (Backbone: mlp)
+#   3. fused:   9,645-dim multi-modal features (Backbone: fused)
 #   4. all:     Chạy tuần tự toàn bộ cả 3 dạng đặc trưng
 #
 # Đối với mỗi dạng đặc trưng, script sẽ chạy:
@@ -32,6 +32,13 @@ else
     shift "$#"
 fi
 EXTRA_ARGS=("$@")
+
+for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
+    if [[ "$arg" == "--generate_synthetic" || "$arg" == "--generate-synthetic" ]]; then
+        echo "ERROR: train_all_scenarios.sh is for real CIC-AndMal-2020 benchmarks only and forbids $arg." >&2
+        exit 2
+    fi
+done
 
 echo "=============================================================================="
 echo "  FCIL-AndMal2020 Master Scenario Training Pipeline"

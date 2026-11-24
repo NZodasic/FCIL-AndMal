@@ -39,7 +39,11 @@ from config import (
 from utils.seed import set_seed
 from utils.logger import AcademicLogger, get_logger
 from utils.device import clear_device_cache
-from data.synthetic_generator import generate_synthetic_raw_andmal2020
+from data.synthetic_generator import (
+    detect_synthetic_prepared_dir,
+    detect_synthetic_raw_dir,
+    generate_synthetic_raw_andmal2020,
+)
 from data.prepare_dataset import AndMal2020DataPreparer
 from data.partition import FCILDataPartitioner
 from data.dataset import (
@@ -68,12 +72,12 @@ def parse_args():
 
     # Feature representation & Dataset
     parser.add_argument("--feature_type", type=str, choices=["dynamic", "static", "fused"], default="dynamic",
-                        help="Feature representation: dynamic (141/282d), static (reduced 300d), or fused (441d)")
+                        help="Feature representation: dynamic (141d), static (9,503d), or fused (9,645d)")
     parser.add_argument("--backbone", type=str,
                         choices=["hybrid_tcn_cnn", "cnn1d", "tcn", "mlp", "fused", "cnn_bilstm_attention", "falcon"],
                         default="hybrid_tcn_cnn",
                         help="Neural backbone architecture: 'hybrid_tcn_cnn', 'cnn_bilstm_attention' (Falcon), 'cnn1d', 'tcn', 'mlp', or 'fused'")
-    parser.add_argument("--raw_root", type=str, default="./raw_data",
+    parser.add_argument("--raw_root", type=str, default="./Dataset",
                         help="Path to raw CIC-AndMal-2020 directory")
     parser.add_argument("--prepared_dir", type=str, default="./prepared_data",
                         help="Directory for prepared Stage 1 datasets and held-out test splits")
@@ -236,19 +240,6 @@ def build_configs_from_args(args) -> ExperimentConfig:
             "use --method malfsil which is FL-compatible."
         )
     raw_root = args.raw_root
-    if raw_root == "./raw_data" and not getattr(args, "generate_synthetic", False):
-        if not os.path.isdir(raw_root) and os.path.isdir("./Dataset"):
-            raw_root = "./Dataset"
-        elif (
-            os.path.isfile(os.path.join(raw_root, "SYNTHETIC_DATASET.json"))
-            and os.path.isdir("./Dataset")
-            and not os.path.isfile(os.path.join("./Dataset", "SYNTHETIC_DATASET.json"))
-        ):
-            print(
-                "[Warning] './raw_data' contains synthetic development data; "
-                "using real dataset directory './Dataset' instead."
-            )
-            raw_root = "./Dataset"
 
     scenario_cfg = ScenarioConfig(
         feature_type=args.feature_type,
@@ -410,6 +401,7 @@ def ensure_dataset_ready(
 
     # Synthetic generation is an explicit development-only action. Never
     # silently replace a missing scientific dataset with simulated samples.
+    prepared_ready = (os.path.isfile(test_parquet) or os.path.isfile(test_csv)) and os.path.isfile(scaler_path)
     if generate_synthetic:
         print(
             "\n[Data Pipeline] Generating explicitly requested SYNTHETIC "
@@ -423,14 +415,34 @@ def ensure_dataset_ready(
             dynamic_dim=141,
             seed=exp_cfg.seed,
         )
-    elif not os.path.isdir(raw_root):
-        raise FileNotFoundError(
-            f"Raw dataset directory not found: {raw_root}. Provide the real "
-            "dataset or pass --generate_synthetic for a development-only run."
+    elif prepared_ready:
+        is_syn, reasons = detect_synthetic_prepared_dir(
+            prepared_dir, exp_cfg.scenario.feature_type
         )
+        if is_syn:
+            raise ValueError(
+                f"Synthetic prepared '{exp_cfg.scenario.feature_type}' data detected in "
+                f"'{prepared_dir}' ({'; '.join(reasons)}). Refusing to run a benchmark "
+                "on synthetic data without --generate_synthetic."
+            )
+    else:
+        if not os.path.isdir(raw_root):
+            raise FileNotFoundError(
+                f"Raw dataset directory not found: {raw_root}. Provide the real "
+                "dataset or pass --generate_synthetic for a development-only run."
+            )
+        is_syn, reasons = detect_synthetic_raw_dir(
+            raw_root, feature_type=exp_cfg.scenario.feature_type
+        )
+        if is_syn:
+            raise ValueError(
+                f"Synthetic raw data detected in '{raw_root}' ({'; '.join(reasons)}). "
+                "Provide real CIC-AndMal-2020 CSVs via --raw_root or pass "
+                "--generate_synthetic for a development-only run."
+            )
 
     # Check if Stage 1 prepared data exists
-    if not (os.path.isfile(test_parquet) or os.path.isfile(test_csv)) or not os.path.isfile(scaler_path):
+    if not prepared_ready:
         print(
             f"\n[Data Pipeline] Prepared '{exp_cfg.scenario.feature_type}' data or "
             "train-fitted scaler is missing. Running preparer..."

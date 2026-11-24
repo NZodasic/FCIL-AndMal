@@ -2,15 +2,23 @@
 Unit and Integration Tests for Stage 1 Data Preparation and Stage 2 Partitioning.
 """
 
-import os
-import shutil
-import unittest
 import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
 import numpy as np
 import pandas as pd
 
 from config import ScenarioConfig, TASK_LABEL_MAP, ALL_LABELS
-from data.synthetic_generator import generate_synthetic_raw_andmal2020
+from data.synthetic_generator import (
+    detect_synthetic_prepared_dir,
+    detect_synthetic_raw_dir,
+    generate_synthetic_raw_andmal2020,
+)
 from data.prepare_dataset import AndMal2020DataPreparer
 from data.partition import FCILDataPartitioner
 from data.dataset import FLTaskDataset, get_participating_clients, recommend_batch_size
@@ -47,7 +55,8 @@ class TestDataPipeline(unittest.TestCase):
         preparer = AndMal2020DataPreparer(
             raw_root=self.raw_dir,
             output_dir=self.prep_dir,
-            seed=42
+            seed=42,
+            data_provenance="synthetic_development",
         )
         preparer.run_all(data_type="all", test_ratio=0.2, val_ratio=0.1)
 
@@ -292,6 +301,203 @@ class TestDataPipeline(unittest.TestCase):
                         0,
                         f"Empty shard for task_{task_id} client_{cid:02d}",
                     )
+
+    def test_10_rejects_synthetic_static_without_opt_in(self):
+        """Reject synthetic static CSVs under user_supplied provenance even without SYNTHETIC_DATASET.json."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            raw_copy = os.path.join(tmp_dir, "raw")
+            prep_out = os.path.join(tmp_dir, "prep")
+            shutil.copytree(self.raw_dir, raw_copy)
+            marker = os.path.join(raw_copy, "SYNTHETIC_DATASET.json")
+            if os.path.isfile(marker):
+                os.remove(marker)
+
+            preparer = AndMal2020DataPreparer(
+                raw_root=raw_copy,
+                output_dir=prep_out,
+                seed=42,
+                data_provenance="user_supplied",
+            )
+            with self.assertRaises(ValueError):
+                preparer.prepare_static(test_ratio=0.2, val_ratio=0.1)
+
+    def test_11_rejects_synthetic_dynamic_without_opt_in(self):
+        """Reject synthetic dynamic CSVs under user_supplied provenance even without SYNTHETIC_DATASET.json."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            raw_copy = os.path.join(tmp_dir, "raw")
+            prep_out = os.path.join(tmp_dir, "prep")
+            shutil.copytree(self.raw_dir, raw_copy)
+            marker = os.path.join(raw_copy, "SYNTHETIC_DATASET.json")
+            if os.path.isfile(marker):
+                os.remove(marker)
+
+            preparer = AndMal2020DataPreparer(
+                raw_root=raw_copy,
+                output_dir=prep_out,
+                seed=42,
+                data_provenance="user_supplied",
+            )
+            with self.assertRaises(ValueError):
+                preparer.prepare_dynamic(test_ratio=0.2, val_ratio=0.1)
+
+    def test_12_dynamic_excludes_synthetic_when_real_csvs_present(self):
+        """Exclude synthetic dynamic CSVs automatically when real telemetry CSVs are also present."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            raw_dir = os.path.join(tmp_dir, "raw")
+            dyn_dir = os.path.join(raw_dir, "Dynamic", "AndMal2020-dynamic-BeforeAndAfterReboot")
+            prep_out = os.path.join(tmp_dir, "prep")
+            os.makedirs(dyn_dir, exist_ok=True)
+
+            syn_df = pd.DataFrame({
+                "Sample_ID": [f"ADWARE_{i:05d}" for i in range(20)],
+                "dyn_metric_0": np.arange(20, dtype=float),
+                "dyn_metric_1": np.arange(20, dtype=float) + 1.0,
+            })
+            syn_df.to_csv(os.path.join(dyn_dir, "adware_before_reboot_Cat.csv"), index=False)
+
+            real_df = pd.DataFrame({
+                "Memory_PssTotal": np.arange(20, dtype=float) + 100.0,
+                "Memory_PssClean": np.arange(20, dtype=float) + 10.0,
+                "Category": ["Adware"] * 20,
+            })
+            real_df.to_csv(os.path.join(dyn_dir, "Adware_after_reboot_Cat.csv"), index=False)
+
+            preparer = AndMal2020DataPreparer(
+                raw_root=raw_dir,
+                output_dir=prep_out,
+                seed=42,
+                data_provenance="user_supplied",
+            )
+            with self.assertWarnsRegex(RuntimeWarning, "missing configured classes"):
+                preparer.prepare_dynamic(test_ratio=0.2, val_ratio=0.1)
+
+            out_df = pd.read_csv(os.path.join(prep_out, "dynamic", "dynamic_all.csv"))
+            self.assertEqual(get_feature_columns(out_df), ["Memory_PssTotal", "Memory_PssClean"])
+            self.assertEqual(len(out_df), 20)
+
+    def test_13_detects_synthetic_prepared_dir(self):
+        """Detect synthetic prepared directories by provenance and schema/Sample_IDs, while allowing real splits."""
+        for mod in ("dynamic", "static", "fused"):
+            is_syn, _ = detect_synthetic_prepared_dir(self.prep_dir, mod)
+            self.assertTrue(is_syn, f"Expected synthetic detection for {mod}")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            prep_copy = os.path.join(tmp_dir, "prep_spoofed")
+            shutil.copytree(self.prep_dir, prep_copy)
+            with open(os.path.join(prep_copy, "data_provenance.json"), "w") as handle:
+                json.dump({"source": "user_supplied"}, handle)
+            for mod in ("dynamic", "static", "fused"):
+                is_syn, _ = detect_synthetic_prepared_dir(prep_copy, mod)
+                self.assertTrue(is_syn, f"Expected schema/Sample_ID detection for spoofed {mod}")
+
+            fused_only = os.path.join(tmp_dir, "fused_only")
+            os.makedirs(os.path.join(fused_only, "fused"), exist_ok=True)
+            with open(os.path.join(fused_only, "fused", "feature_schema.json"), "w") as handle:
+                json.dump(
+                    {
+                        "feature_type": "fused",
+                        "feature_count": 441,
+                        "static_dim": 300,
+                        "dynamic_dim": 141,
+                        "feature_columns": ["static_feat_0", "static_feat_1", "static_feat_2"],
+                    },
+                    handle,
+                )
+            is_syn_f, _ = detect_synthetic_prepared_dir(fused_only, "fused")
+            self.assertTrue(is_syn_f)
+
+            real_prep = os.path.join(tmp_dir, "real_prep")
+            os.makedirs(os.path.join(real_prep, "dynamic"), exist_ok=True)
+            with open(os.path.join(real_prep, "data_provenance.json"), "w") as handle:
+                json.dump({"source": "user_supplied"}, handle)
+            with open(os.path.join(real_prep, "dynamic", "feature_schema.json"), "w") as handle:
+                json.dump(
+                    {
+                        "feature_type": "dynamic",
+                        "feature_count": 2,
+                        "feature_columns": ["Memory_PssTotal", "Memory_PssClean"],
+                    },
+                    handle,
+                )
+            pd.DataFrame({
+                "Sample_ID": ["SAMPLE_DYN_0000001", "SAMPLE_DYN_0000002"],
+                "Memory_PssTotal": [0.1, 0.2],
+                "Memory_PssClean": [0.3, 0.4],
+                "label": ["Adware", "Trojan"],
+            }).to_parquet(os.path.join(real_prep, "dynamic", "test.parquet"), index=False)
+            is_syn_real, reasons_real = detect_synthetic_prepared_dir(real_prep, "dynamic")
+            self.assertFalse(is_syn_real, f"Unexpected synthetic flag on real data: {reasons_real}")
+
+    def test_14_synthetic_generator_refuses_dataset_dir(self):
+        """Refuse generating synthetic files in a Dataset dir or over real CSVs."""
+        is_syn_raw, _ = detect_synthetic_raw_dir(self.raw_dir, feature_type="all")
+        self.assertTrue(is_syn_raw)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaises(ValueError):
+                generate_synthetic_raw_andmal2020(
+                    root_dir=os.path.join(tmp_dir, "Dataset"),
+                    samples_per_class=20,
+                    seed=42,
+                )
+
+            real_dir = os.path.join(tmp_dir, "custom_real")
+            dyn_dir = os.path.join(real_dir, "Dynamic", "AndMal2020-dynamic-BeforeAndAfterReboot")
+            os.makedirs(dyn_dir, exist_ok=True)
+            pd.DataFrame({
+                "Memory_PssTotal": [100, 200],
+                "Memory_PssClean": [10, 20],
+            }).to_csv(os.path.join(dyn_dir, "Adware_before_reboot_Cat.csv"), index=False)
+            is_syn_real_raw, _ = detect_synthetic_raw_dir(real_dir, feature_type="dynamic")
+            self.assertFalse(is_syn_real_raw)
+            with self.assertRaises(ValueError):
+                generate_synthetic_raw_andmal2020(
+                    root_dir=real_dir,
+                    samples_per_class=20,
+                    seed=42,
+                )
+
+    def test_15_run_all_rejects_generate_synthetic_and_synthetic_dirs(self):
+        """run_all.py forbids --generate_synthetic and rejects synthetic raw/prepared directories."""
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        res = subprocess.run(
+            [sys.executable, "run_all.py", "--generate_synthetic", "--dry_run"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(res.returncode, 0)
+
+        from run_all import ensure_dataset
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_prep = Path(tmp_dir) / "prep_missing"
+            tmp_part = Path(tmp_dir) / "part_missing"
+            with self.assertRaises(RuntimeError):
+                ensure_dataset(
+                    Path(self.raw_dir),
+                    tmp_prep,
+                    tmp_part,
+                    "dynamic",
+                    [20],
+                    generate_synthetic=False,
+                    skip=False,
+                    dry=True,
+                )
+
+            tmp_empty_raw = Path(tmp_dir) / "empty_raw"
+            tmp_empty_raw.mkdir(parents=True, exist_ok=True)
+            with self.assertRaises(RuntimeError):
+                ensure_dataset(
+                    tmp_empty_raw,
+                    Path(self.prep_dir),
+                    tmp_part,
+                    "dynamic",
+                    [20],
+                    generate_synthetic=False,
+                    skip=False,
+                    dry=True,
+                )
 
 
 if __name__ == "__main__":

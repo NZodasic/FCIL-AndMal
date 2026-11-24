@@ -20,7 +20,7 @@ PYTHONPATH="$(pwd)/.." && export PYTHONPATH
 # ──────────────────────────────────────────────────────────────────────────────
 # Global experiment hyper-parameters (fixed per spec)
 # ──────────────────────────────────────────────────────────────────────────────
-DATA_DIR="./raw_data"
+DATA_DIR="./Dataset"
 PREPARED_DIR="./prepared_data"
 PARTITION_DIR="./fl_data_partitions"
 OUTPUT_ROOT="./EXPERIMENT"

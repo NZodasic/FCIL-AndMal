@@ -29,6 +29,12 @@ from config import (
 )
 from data.schema import drop_raw_metadata, get_feature_columns
 from data.scaling import fit_transform_splits
+from data.synthetic_generator import (
+    SYNTHETIC_DYNAMIC_COL_RE,
+    SYNTHETIC_SAMPLE_ID_RE,
+    detect_synthetic_prepared_dir,
+    is_synthetic_raw_csv,
+)
 
 
 class AndMal2020DataPreparer:
@@ -135,6 +141,18 @@ class AndMal2020DataPreparer:
         with open(os.path.join(out_dir, "feature_schema.json"), "w") as schema_file:
             json.dump(schema, schema_file, indent=2)
 
+    def _assert_not_synthetic_root(self, feature_type: str) -> None:
+        """Refuse synthetic development raw directories unless explicitly opted in."""
+        if self.data_provenance == "synthetic_development":
+            return
+        marker = os.path.join(self.raw_root, "SYNTHETIC_DATASET.json")
+        if os.path.isfile(marker):
+            raise ValueError(
+                f"Refusing to prepare '{feature_type}' data from synthetic directory "
+                f"'{self.raw_root}' ({marker} present). Pass '--root <real_cic_dir>' "
+                "or '--data_provenance synthetic_development' for development tests only."
+            )
+
     def _record_class_coverage(self, df: pd.DataFrame, feature_type: str) -> None:
         available = sorted(df["label"].astype(str).unique().tolist())
         missing = [label for label in ALL_LABELS if label not in available]
@@ -159,6 +177,7 @@ class AndMal2020DataPreparer:
         Process static CSVs (Benign Ben0..Ben4 and 14 Malicious family files).
         """
         print(f"\n[Stage 1] Preparing Static Dataset from {self.raw_root}...")
+        self._assert_not_synthetic_root("static")
         benign_files = self._find_csv_files([
             os.path.join("Static", "CCCS-CIC-Benign-CSVs"),
             "CCCS-CIC-Benign-CSVs",
@@ -175,6 +194,20 @@ class AndMal2020DataPreparer:
                 "Provide the real CIC-AndMal files or explicitly generate a "
                 "development dataset before running preparation."
             )
+
+        if self.data_provenance != "synthetic_development":
+            synthetic_hits = []
+            for fp in all_static_files:
+                is_syn, reason = is_synthetic_raw_csv(fp)
+                if is_syn:
+                    synthetic_hits.append(f"{fp} ({reason})")
+            if synthetic_hits:
+                preview = "; ".join(synthetic_hits[:5])
+                extra = f" ... (+{len(synthetic_hits) - 5} more)" if len(synthetic_hits) > 5 else ""
+                raise ValueError(
+                    f"Synthetic static CSV(s) detected when preparing real benchmark data: "
+                    f"{preview}{extra}. Provide real CIC-AndMal-2020 static CSVs via --root <real_cic_dir>."
+                )
 
         out_static_dir = os.path.join(self.output_dir, "static")
         os.makedirs(out_static_dir, exist_ok=True)
@@ -421,6 +454,7 @@ class AndMal2020DataPreparer:
         Process dynamic CSVs (before & after reboot runtime logs).
         """
         print(f"\n[Stage 1] Preparing Dynamic Dataset from {self.raw_root}...")
+        self._assert_not_synthetic_root("dynamic")
         dynamic_directories = [
             os.path.join("Dynamic", "AndMal2020-dynamic-BeforeAndAfterReboot"),
             "AndMal2020-dynamic-BeforeAndAfterReboot",
@@ -438,11 +472,27 @@ class AndMal2020DataPreparer:
                 "AndMal2020-dynamic-BeforeAndAfterReboot/."
             )
 
-        # When real uppercase files exist, exclude synthetic lowercase CSVs
-        uppercase_files = [f for f in dynamic_files if os.path.basename(f)[0].isupper()]
-        if uppercase_files:
-            print(f"  [Stage 1] Real uppercase telemetry detected ({len(uppercase_files)} files). Excluding synthetic lowercase CSVs.")
-            dynamic_files = uppercase_files
+        if self.data_provenance != "synthetic_development":
+            real_files = []
+            synthetic_files = []
+            for fp in dynamic_files:
+                is_syn, _ = is_synthetic_raw_csv(fp)
+                if is_syn:
+                    synthetic_files.append(fp)
+                else:
+                    real_files.append(fp)
+            if synthetic_files:
+                if not real_files:
+                    raise ValueError(
+                        f"All {len(synthetic_files)} dynamic CSV(s) under {self.raw_root} are "
+                        f"synthetic development files (e.g., {os.path.basename(synthetic_files[0])}). "
+                        "Refusing to prepare synthetic data for a real benchmark."
+                    )
+                print(
+                    f"  [Stage 1] Excluding {len(synthetic_files)} synthetic dynamic CSV(s); "
+                    f"retaining {len(real_files)} real telemetry file(s)."
+                )
+                dynamic_files = real_files
 
         dfs = []
         expected_features: Optional[List[str]] = None
@@ -505,6 +555,22 @@ class AndMal2020DataPreparer:
         synthetic multimodal examples from unrelated applications.
         """
         print("\n[Stage 1] Preparing Fused Multi-Modal Dataset (Static + Dynamic)...")
+        if self.data_provenance != "synthetic_development" and (static_df is None or dynamic_df is None):
+            prep_reasons: List[str] = []
+            if static_df is None:
+                is_syn_s, reasons_s = detect_synthetic_prepared_dir(self.output_dir, "static")
+                if is_syn_s:
+                    prep_reasons.extend(reasons_s)
+            if dynamic_df is None:
+                is_syn_d, reasons_d = detect_synthetic_prepared_dir(self.output_dir, "dynamic")
+                if is_syn_d:
+                    prep_reasons.extend(reasons_d)
+            if prep_reasons:
+                raise ValueError(
+                    "Refusing to construct real 'fused' split from synthetic prepared splits: "
+                    + "; ".join(prep_reasons)
+                )
+
         if static_df is None:
             static_parquet = os.path.join(self.output_dir, "static", "static_all.parquet")
             if os.path.isfile(static_parquet):
@@ -517,6 +583,20 @@ class AndMal2020DataPreparer:
                 dynamic_df = pd.read_parquet(dynamic_parquet)
             else:
                 dynamic_df = pd.read_csv(os.path.join(self.output_dir, "dynamic", "dynamic_all.csv"), low_memory=False)
+
+        if self.data_provenance != "synthetic_development":
+            if "Sample_ID" in static_df.columns:
+                head_ids = [str(v) for v in static_df["Sample_ID"].head(25).tolist()]
+                for sid in head_ids:
+                    if SYNTHETIC_SAMPLE_ID_RE.match(sid):
+                        raise ValueError(
+                            f"Refusing to prepare real 'fused' split: static_df contains synthetic Sample_ID '{sid}'."
+                        )
+            syn_dyn_cols = [c for c in dynamic_df.columns if SYNTHETIC_DYNAMIC_COL_RE.match(str(c))]
+            if syn_dyn_cols:
+                raise ValueError(
+                    f"Refusing to prepare real 'fused' split: dynamic_df contains synthetic columns ({syn_dyn_cols[:5]})."
+                )
 
         # Retain static columns and dynamic columns with suffix
         dyn_feature_cols = [c for c in dynamic_df.columns if c not in ["label", "reboot_phase"]]
@@ -773,7 +853,7 @@ class AndMal2020DataPreparer:
 
 def main():
     parser = argparse.ArgumentParser(description="Stage 1 Dataset Preparation for CIC-AndMal-2020")
-    parser.add_argument("--root", type=str, default="./raw_data", help="Root directory containing raw CSVs")
+    parser.add_argument("--root", type=str, default="./Dataset", help="Root directory containing raw CSVs")
     parser.add_argument("--output_dir", type=str, default="./prepared_data", help="Destination prepared data directory")
     parser.add_argument("--chunksize", type=int, default=100000, help="CSV chunk streaming size")
     parser.add_argument("--type", type=str, choices=["static", "dynamic", "fused", "both", "all"], default="all")

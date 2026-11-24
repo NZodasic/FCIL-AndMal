@@ -24,7 +24,7 @@ class ScenarioConfig:
     min_samples_per_label_client: int = 30
     output_dir: str = './fl_data_partitions'
     partition_output_dir: Optional[str] = None
-    raw_data_dir: str = './raw_data'
+    raw_data_dir: str = './Dataset'
     prepared_data_dir: str = './prepared_data'
     label_col: str = 'label'
 

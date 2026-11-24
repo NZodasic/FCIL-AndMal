@@ -4,7 +4,7 @@ FCIL-AndMal Full Pipeline Runner
 =================================
 Tự động:
   1. Kiểm tra / chuẩn bị dataset (Stage 1 + Stage 2) cho các kịch bản Client (20, 50 clients).
-     Hỗ trợ đầy đủ các dạng đặc trưng: dynamic (141d), static (300d), hoặc fused multi-modal (441d).
+     Hỗ trợ đầy đủ các dạng đặc trưng: dynamic (141d), static (9,503d), hoặc fused multi-modal (9,645d).
   2. Chạy toàn bộ 10 bài toán thực nghiệm (4 Centralized + 6 FL) cho từng kịch bản Client.
   3. In đầy đủ metrics (Accuracy, Macro/Micro/Weighted P/R/F1) mỗi lần test.
   4. Confusion matrix chỉ ở round/epoch cuối mỗi task.
@@ -167,17 +167,48 @@ def ensure_dataset(
     partition_dir: Path,
     feature_type: str,
     clients_list: List[int],
-    generate_synthetic: bool,
-    skip: bool,
-    dry: bool,
+    generate_synthetic: bool = False,
+    skip: bool = False,
+    dry: bool = False,
     allow_incomplete_benchmark: bool = False,
     seed: int = SEED,
 ) -> None:
     section("STAGE 0 — Dataset Integrity Check")
 
+    if generate_synthetic:
+        raise RuntimeError(
+            "Synthetic data generation is disabled in run_all.py. "
+            "Use './entrypoint.sh smoke' or pytest for synthetic development tests."
+        )
+
     flags = check_dataset(prepared_dir, partition_dir, feature_type, clients_list)
     for key, ready in flags.items():
         (ok if ready else warn)(f"{key}: {'ready' if ready else 'MISSING'}")
+
+    from data.synthetic_generator import detect_synthetic_prepared_dir, detect_synthetic_raw_dir
+
+    if (flags["stage1_test"] and flags["stage1_train"]) or skip:
+        is_syn, reasons = detect_synthetic_prepared_dir(str(prepared_dir), feature_type)
+        if is_syn:
+            for r in reasons:
+                err(f"Synthetic prepared data detected: {r}")
+            err(
+                f"Delete stale synthetic prepared files (e.g., rm -rf {prepared_dir / feature_type}) "
+                "and re-prepare from real CIC-AndMal-2020 data."
+            )
+            raise RuntimeError("Refusing to run benchmark on synthetic prepared data.")
+    else:
+        if not raw_dir.is_dir():
+            raise RuntimeError(
+                f"Raw CIC-AndMal-2020 dataset directory not found: {raw_dir}. "
+                "Pass --raw_root <path_to_real_CIC_AndMal_2020>."
+            )
+        is_syn, reasons = detect_synthetic_raw_dir(str(raw_dir), feature_type=feature_type)
+        if is_syn:
+            for r in reasons:
+                err(f"Synthetic raw data detected: {r}")
+            err("Supply real CIC-AndMal-2020 CSVs via --raw_root <path_to_real_CIC_AndMal_2020>.")
+            raise RuntimeError("Refusing to run benchmark on synthetic raw data.")
 
     if skip:
         warn("--skip_data_prep set; skipping preparation steps.")
@@ -186,20 +217,12 @@ def ensure_dataset(
     # Stage 1
     if not (flags["stage1_test"] and flags["stage1_train"]):
         info("Running Stage 1 data preparation...")
-        if generate_synthetic and not raw_dir.is_dir():
-            info("Generating synthetic raw dataset...")
-            if not dry:
-                from data.synthetic_generator import generate_synthetic_raw_andmal2020
-                generate_synthetic_raw_andmal2020(
-                    root_dir=str(raw_dir), samples_per_class=350,
-                    static_dim=300, dynamic_dim=141, seed=seed,
-                )
         if not run_stage1(
             raw_dir,
             prepared_dir,
             seed,
             dry,
-            synthetic_development=generate_synthetic,
+            synthetic_development=False,
             feature_type=feature_type,
             allow_incomplete_benchmark=allow_incomplete_benchmark,
         ):
@@ -285,8 +308,10 @@ def run_experiment(
     cmd: List[str],
     log_dir: Path,
     dry: bool,
+    feature_type: str = "",
 ) -> Tuple[bool, float]:
-    log_file = log_dir / f"{case_name}.stdout.log"
+    log_name = f"{case_name}_{feature_type}.stdout.log" if feature_type else f"{case_name}.stdout.log"
+    log_file = log_dir / log_name
     t0 = time.time()
     info(f"Command: {' '.join(cmd)}")
     info(f"Log    : {log_file}")
@@ -370,10 +395,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--clients",          type=int, nargs="+", default=[20, 50],
                    help="Client count scenarios to run (e.g. --clients 20 50 or --clients 20)")
     p.add_argument("--feature_type",     type=str, choices=["dynamic", "static", "fused"], default="dynamic",
-                   help="Feature representation type: dynamic (141d), static (300d), or fused multi-modal (441d)")
+                   help="Feature representation type: dynamic (141d), static (9,503d), or fused multi-modal (9,645d)")
     p.add_argument("--backbone",         type=str, choices=["hybrid_tcn_cnn", "cnn1d", "tcn", "mlp", "fused", "cnn_bilstm_attention", "falcon"], default=None,
                    help="Neural backbone architecture (auto-selects based on feature_type if None)")
-    p.add_argument("--raw_root",        default="./raw_data",          help="Raw CIC-AndMal-2020 directory")
+    p.add_argument("--raw_root",        default="./Dataset",           help="Raw CIC-AndMal-2020 directory")
     p.add_argument("--prepared_dir",    default="./prepared_data",     help="Stage 1 prepared data dir")
     p.add_argument("--partition_dir",   default="./fl_data_partitions",help="Stage 2 FL partitions dir")
     p.add_argument("--output_root",     default="./EXPERIMENT",        help="Output root for results")
@@ -382,7 +407,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--allow_incomplete_benchmark", action="store_true", default=False,
                    help="Allow execution when configured classes (e.g. Benign in dynamic) are absent")
     p.add_argument("--generate_synthetic", action="store_true",
-                   help="Generate synthetic data if raw_root is absent")
+                   help="Disabled in run_all.py: benchmark runs require real CIC-AndMal-2020 data (use './entrypoint.sh smoke' for dev tests)")
     p.add_argument("--skip_data_prep",  action="store_true",
                    help="Skip Stage 1 & 2 preparation (assume data is ready)")
     p.add_argument("--dry_run",         action="store_true",
@@ -401,6 +426,14 @@ def parse_args() -> argparse.Namespace:
 # ──────────────────────────────────────────────────────────────────────────────
 def main() -> None:
     args = parse_args()
+
+    if args.generate_synthetic:
+        err(
+            "--generate_synthetic is disabled in run_all.py. Benchmark runs require "
+            "the real CIC-AndMal-2020 dataset (--raw_root ./Dataset). For development "
+            "smoke tests, use './entrypoint.sh smoke' or pytest."
+        )
+        sys.exit(2)
 
     # Configure Mac MPS environment and resolve accelerator device
     from utils.device import resolve_device, get_device_info, configure_mps_environment
@@ -430,6 +463,7 @@ def main() -> None:
     else:
         info("Execution device: CPU")
     info(f"Output   : {args.output_root}")
+    info(f"Raw Data : {args.raw_root}")
     info(f"Seed     : {args.seed}")
     info(f"Feature  : {args.feature_type}")
     info(f"Backbone : {backbone}")
@@ -453,21 +487,7 @@ def main() -> None:
                 print(f"  [{idx:02d}] {name:<26}  mode={mode:<12} method={method:<10} agg={agg or 'N/A'}")
         return
 
-    # Auto-detect raw data directory if default ./raw_data does not exist (or only holds synthetic dev data) while ./Dataset exists
     raw_dir = Path(args.raw_root)
-    if args.raw_root == "./raw_data" and not args.generate_synthetic:
-        if not raw_dir.is_dir() and Path("./Dataset").is_dir():
-            raw_dir = Path("./Dataset")
-            info(f"Auto-detected dataset directory: {raw_dir}")
-        elif (
-            (raw_dir / "SYNTHETIC_DATASET.json").is_file()
-            and Path("./Dataset").is_dir()
-            and not (Path("./Dataset") / "SYNTHETIC_DATASET.json").is_file()
-        ):
-            warn("./raw_data contains synthetic development data; switching to real dataset directory ./Dataset.")
-            raw_dir = Path("./Dataset")
-        elif (raw_dir / "SYNTHETIC_DATASET.json").is_file():
-            warn("./raw_data contains SYNTHETIC development data (not real CIC-AndMal-2020 telemetry).")
 
     prepared_dir  = Path(args.prepared_dir)
     partition_dir = Path(args.partition_dir)
@@ -572,13 +592,16 @@ def main() -> None:
                     seed=args.seed,
                 )
 
-                success, elapsed = run_experiment(case_name, cmd, log_dir, args.dry_run)
+                success, elapsed = run_experiment(
+                    case_name, cmd, log_dir, args.dry_run, feature_type=args.feature_type
+                )
                 elapsed_fmt = str(timedelta(seconds=int(elapsed)))
 
                 if success:
                     ok(f"Finished {case_name} in {elapsed_fmt}")
                 else:
-                    err(f"FAILED {case_name} after {elapsed_fmt} — see {log_dir / f'{case_name}.stdout.log'}")
+                    log_name = f"{case_name}_{args.feature_type}.stdout.log"
+                    err(f"FAILED {case_name} after {elapsed_fmt} — see {log_dir / log_name}")
                     overall_all_passed = False
 
                 scenario_results.append({
@@ -646,13 +669,16 @@ def main() -> None:
                         seed=args.seed,
                     )
 
-                    success, elapsed = run_experiment(full_case_tag, cmd, log_dir, args.dry_run)
+                    success, elapsed = run_experiment(
+                        full_case_tag, cmd, log_dir, args.dry_run, feature_type=args.feature_type
+                    )
                     elapsed_fmt = str(timedelta(seconds=int(elapsed)))
 
                     if success:
                         ok(f"Finished {full_case_tag} in {elapsed_fmt}")
                     else:
-                        err(f"FAILED {full_case_tag} after {elapsed_fmt} — see {log_dir / f'{full_case_tag}.stdout.log'}")
+                        log_name = f"{full_case_tag}_{args.feature_type}.stdout.log"
+                        err(f"FAILED {full_case_tag} after {elapsed_fmt} — see {log_dir / log_name}")
                         overall_all_passed = False
 
                     scenario_results.append({
